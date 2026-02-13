@@ -642,19 +642,10 @@ def _scrape_current_page(page, page_label):
     return banners
 
 
-def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_proxy=True):
+def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
     """
-    Full site scrape: homepage first, then auto-discover and scrape the promotions page.
-
-    Args:
-        url: Base URL of the site (e.g. "https://example.com")
-        headless: Run browser headless
-        location: Geo location code
-        proxy: Optional proxy dict
-        use_env_proxy: Load proxy from .env if True
-
-    Returns:
-        dict with keys 'homepage' and 'promotions', each a list of banner dicts
+    Internal helper: performs the actual scraping with given connection settings.
+    Returns dict with 'homepage' and 'promotions' results.
     """
     results = {'homepage': [], 'promotions': []}
 
@@ -781,3 +772,67 @@ def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_prox
             if 'browser' in locals():
                 browser.close()
             return results
+
+
+def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_proxy=True):
+    """
+    Full site scrape with automatic proxy fallback.
+
+    Strategy:
+    1. Try direct connection first (faster, free)
+    2. If blocked/failed (0 images found) -> automatically retry with proxy
+    3. Returns best results (proxy or direct)
+
+    Args:
+        url: Base URL of the site (e.g. "https://example.com")
+        headless: Run browser headless
+        location: Geo location code
+        proxy: Optional proxy dict
+        use_env_proxy: Load proxy from .env if True (default)
+
+    Returns:
+        dict with keys 'homepage' and 'promotions', each a list of banner dicts
+    """
+
+    # STEP 1: Try direct connection (no proxy)
+    print("=" * 60)
+    print("[*] STRATEGY: Try direct connection first...")
+    print("=" * 60)
+
+    results = _scrape_with_connection(url, headless, location, proxy=None, use_env_proxy=False)
+
+    # Check if direct connection worked (found any images/banners)
+    total_found = len(results.get('homepage', [])) + len(results.get('promotions', []))
+
+    if total_found > 0:
+        print("\n" + "=" * 60)
+        print(f"[+] SUCCESS: Direct connection worked! Found {total_found} banner(s)")
+        print("[*] No proxy needed - saved proxy bandwidth!")
+        print("=" * 60 + "\n")
+        return results
+
+    # STEP 2: Direct connection failed, retry with proxy
+    print("\n" + "=" * 60)
+    print("[!] Direct connection blocked or failed (0 images found)")
+    print("[*] Retrying with Oxylabs proxy...")
+    print("=" * 60 + "\n")
+
+    if not use_env_proxy and not proxy:
+        print("[-] No proxy available. Returning empty results.")
+        return results
+
+    # Retry with proxy
+    results = _scrape_with_connection(url, headless, location, proxy, use_env_proxy=True)
+
+    total_found = len(results.get('homepage', [])) + len(results.get('promotions', []))
+
+    if total_found > 0:
+        print("\n" + "=" * 60)
+        print(f"[+] SUCCESS: Proxy connection worked! Found {total_found} banner(s)")
+        print("=" * 60 + "\n")
+    else:
+        print("\n" + "=" * 60)
+        print("[!] Site blocked even with proxy. May need residential proxy.")
+        print("=" * 60 + "\n")
+
+    return results
