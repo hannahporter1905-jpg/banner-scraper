@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Banner Scraper - Playwright Edition</title>
+    <link rel="stylesheet" href="style-v2.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>Banner Scraper</h1>
+                <p class="subtitle">Extract banner images from any website using Playwright + Oxylabs proxy</p>
+                <div class="badges">
+                    <span class="badge">Multi-Page</span>
+                    <span class="badge">Geo-Targeting</span>
+                    <span class="badge">Stealth Mode</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Form -->
+        <section class="form-section">
+            <div class="input-group">
+                <label for="urlInput">Website URL</label>
+                <input
+                    type="text"
+                    id="urlInput"
+                    placeholder="https://example.com"
+                    autocomplete="url"
+                >
+            </div>
+
+            <div class="options-row">
+                <div class="input-group">
+                    <label for="locationSelect">Geo Location</label>
+                    <select id="locationSelect">
+                        <option value="1">🇺🇸 United States</option>
+                        <option value="2">🇬🇧 United Kingdom</option>
+                        <option value="3">🇨🇦 Canada</option>
+                        <option value="4">🇦🇺 Australia</option>
+                        <option value="5">🇩🇪 Germany</option>
+                        <option value="6">🇫🇷 France</option>
+                        <option value="7">🇯🇵 Japan</option>
+                        <option value="8">🇧🇷 Brazil</option>
+                        <option value="9">🇮🇳 India</option>
+                        <option value="10">🇸🇬 Singapore</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label for="headlessToggle">Browser Mode</label>
+                    <div class="toggle-wrapper">
+                        <input type="checkbox" id="headlessToggle" checked>
+                        <label for="headlessToggle" class="toggle-label">
+                            <span class="toggle-inner"></span>
+                            <span class="toggle-text">Headless</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <button id="startBtn" class="btn-primary">
+                <span class="btn-icon">🚀</span>
+                Start Scraping
+            </button>
+        </section>
+
+        <!-- Progress Section -->
+        <section id="progressSection" class="progress-section hidden">
+            <div class="progress-header">
+                <h3>Scraping Progress</h3>
+                <span id="statusBadge" class="status-badge running">Running...</span>
+            </div>
+            <div id="progressLog" class="progress-log"></div>
+            <div class="progress-bar">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section id="resultsSection" class="results-section hidden">
+            <div class="results-header">
+                <h2>Results</h2>
+                <div class="results-meta">
+                    <span id="resultCount">0 banners found</span>
+                    <button id="downloadAllBtn" class="btn-secondary">Download All URLs</button>
+                </div>
+            </div>
+
+            <!-- Homepage Banners -->
+            <div id="homepageSection" class="page-section">
+                <h3 class="page-title">Homepage Banners</h3>
+                <div id="homepageGrid" class="banner-grid"></div>
+            </div>
+
+            <!-- Promotions Banners -->
+            <div id="promotionsSection" class="page-section hidden">
+                <h3 class="page-title">Promotions Page Banners</h3>
+                <div id="promotionsGrid" class="banner-grid"></div>
+            </div>
+
+            <!-- Empty State -->
+            <div id="emptyState" class="empty-state hidden">
+                <div class="empty-icon">📭</div>
+                <h3>No Banners Found</h3>
+                <p>The scraper didn't find any banner images matching the detection criteria.</p>
+            </div>
+        </section>
+
+        <!-- Error Section -->
+        <section id="errorSection" class="error-section hidden">
+            <div class="error-content">
+                <span class="error-icon">⚠️</span>
+                <div>
+                    <h3>Scraping Failed</h3>
+                    <p id="errorMessage"></p>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="script-v2.js"></script>
+</body>
+</html>
