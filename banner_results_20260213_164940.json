@@ -1,0 +1,15 @@
+{
+  "url": "https://www.novadreams.com/promotions",
+  "location": "CA",
+  "timestamp": "2026-02-13T16:49:40.619163",
+  "total_banners": 1,
+  "banners": [
+    {
+      "src": "https://www.novadreams.com/images/logo-full.svg?hash=01c20122ba8443030f02e0b9e2195a43",
+      "alt": "NovaDreams",
+      "width": 112,
+      "height": 40,
+      "type": "Banner Image"
+    }
+  ]
+}
