@@ -455,39 +455,60 @@ def _click_promo_link(page, base_url):
 
     print(f"[+] Found promo link: \"{clicked['text']}\" -> {clicked['href']}")
 
-    # Actually click it using Playwright's click (handles SPA navigation, overlays, etc.)
     try:
-        # Build a selector that matches the link we found
-        href = clicked['href']
-        # Try clicking by href match
-        link = page.locator(f'a[href="{href}"]').first
-        link.click(timeout=5000)
-    except Exception:
-        # Fallback: click via JS
-        page.evaluate("""
-            (args) => {
-                const anchors = document.querySelectorAll('a[href]');
-                for (const a of anchors) {
-                    const text = (a.textContent || '').trim().toLowerCase();
-                    const path = (new URL(a.href, document.location.origin)).pathname.toLowerCase();
-                    if (args.keywords.some(kw => text.includes(kw) || path.includes(kw))) {
-                        a.click();
-                        break;
+        # Get current URL before click to detect navigation
+        old_url = page.url
+
+        # Actually click it using Playwright's click (handles SPA navigation, overlays, etc.)
+        try:
+            # Build a selector that matches the link we found
+            href = clicked['href']
+            # Try clicking by href match
+            link = page.locator(f'a[href="{href}"]').first
+            link.click(timeout=5000)
+        except Exception:
+            # Fallback: click via JS
+            page.evaluate("""
+                (args) => {
+                    const anchors = document.querySelectorAll('a[href]');
+                    for (const a of anchors) {
+                        const text = (a.textContent || '').trim().toLowerCase();
+                        const path = (new URL(a.href, document.location.origin)).pathname.toLowerCase();
+                        if (args.keywords.some(kw => text.includes(kw) || path.includes(kw))) {
+                            a.click();
+                            break;
+                        }
                     }
                 }
-            }
-        """, {'keywords': PROMO_KEYWORDS})
+            """, {'keywords': PROMO_KEYWORDS})
 
-    # Wait for navigation / page transition
-    print("[*] Waiting for promotions page to load...")
-    time.sleep(2)
-    try:
-        page.wait_for_load_state('networkidle', timeout=30000)
-    except Exception:
-        pass
-    time.sleep(random.uniform(2, 4))
+        # Wait for navigation / page transition
+        print("[*] Waiting for promotions page to load...")
+        time.sleep(3)
 
-    return True
+        # Check if URL changed (navigation occurred)
+        try:
+            new_url = page.url
+            if new_url != old_url:
+                print(f"    Navigation detected: {new_url}")
+        except Exception:
+            pass
+
+        # Wait for page to stabilize after navigation
+        try:
+            # Wait for DOM to be ready first
+            page.wait_for_load_state('domcontentloaded', timeout=15000)
+            # Then wait for network to settle
+            page.wait_for_load_state('networkidle', timeout=30000)
+        except Exception as e:
+            print(f"    (Page load didn't fully complete, continuing anyway)")
+
+        time.sleep(random.uniform(2, 4))
+        return True
+
+    except Exception as e:
+        print(f"[-] Error during promo link click/navigation: {e}")
+        return False
 
 
 def _scrape_current_page(page, page_label):
@@ -733,7 +754,11 @@ def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_prox
             # Actually click the promo link like a real user
             if _click_promo_link(page, url):
                 # Link was clicked, page has navigated, now scrape
-                results['promotions'] = _scrape_current_page(page, 'Promotions')
+                try:
+                    results['promotions'] = _scrape_current_page(page, 'Promotions')
+                except Exception as e:
+                    print(f"[-] Error scraping promotions page: {e}")
+                    print("    (Homepage results still available)")
             else:
                 print("[-] No promotions link found on page")
 
