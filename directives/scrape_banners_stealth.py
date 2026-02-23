@@ -10,7 +10,12 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 
 def get_proxy_from_env(country='US'):
-    """Build proxy config from .env variables. Supports country override."""
+    """Build proxy config from .env variables. Supports country override.
+
+    Oxylabs Web Unblocker geo-targeting requires the country to be encoded
+    in the username: e.g. myuser-country-CA. The x-oxylabs-geo-location header
+    is kept as a secondary signal.
+    """
     host = os.getenv('PROXY_HOST')
     port = os.getenv('PROXY_PORT')
     user = os.getenv('PROXY_USER', '')
@@ -20,12 +25,46 @@ def get_proxy_from_env(country='US'):
     if not host or not port:
         return None
 
+    # Embed country in username for reliable Oxylabs geo-targeting
+    # Format: username-country-XX (e.g. aqaq1_xZnFG-country-CA)
+    if user and country:
+        user = f"{user}-country-{country.upper()}"
+
     return {
         'server': f'{scheme}://{host}:{port}',
         'username': user,
         'password': password,
         'country': country,
     }
+
+def is_page_blocked(page):
+    """
+    Detect geo-restriction / access-denied pages before scraping them.
+
+    Checks the page title and first 3000 chars of body text for phrases that
+    indicate the real site content was not served (e.g. "RESTRICTED REGION").
+    Returns True if blocked, False if the page looks like the real site.
+    """
+    block_phrases = [
+        'restricted region', 'not available in your region',
+        'not available in your country', 'not available in your area',
+        'geographic restriction', 'geo restriction',
+        'access denied', 'access is not available',
+        'blocked in your country', 'country is not supported',
+        'not accessible from your location', 'region not supported',
+        'this site is not available', 'unavailable in your country',
+        'this content is not available', 'service not available in your region',
+    ]
+    try:
+        title = (page.title() or '').lower()
+        body_text = page.evaluate(
+            "() => (document.body && document.body.innerText || '').toLowerCase().slice(0, 3000)"
+        )
+        combined = title + ' ' + body_text
+        return any(phrase in combined for phrase in block_phrases)
+    except Exception:
+        return False
+
 
 def get_random_user_agent():
     """Return a random realistic user agent"""
@@ -735,6 +774,14 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             except Exception:
                 print("    (network didn't fully idle, continuing...)")
 
+            # Detect geo-block / access-denied pages BEFORE scraping
+            # (so we don't return the block page's images as real banners)
+            if is_page_blocked(page):
+                print(f"[!] Geo-restriction detected on homepage — not the real site")
+                results['blocked'] = True
+                browser.close()
+                return results
+
             results['homepage'] = _scrape_current_page(page, 'Homepage')
 
             # --- STEP 2: Navigate to promotions page ---
@@ -801,20 +848,25 @@ def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_prox
 
     results = _scrape_with_connection(url, headless, location, proxy=None, use_env_proxy=False)
 
-    # Check if direct connection worked (found any images/banners)
+    # Check if direct connection worked
+    # Blocked = geo-restriction page detected (don't trust any banners found on it)
+    # Zero = page loaded but no banners matched (also retry with proxy)
     total_found = len(results.get('homepage', [])) + len(results.get('promotions', []))
+    is_blocked = results.get('blocked', False)
 
-    if total_found > 0:
+    if total_found > 0 and not is_blocked:
         print("\n" + "=" * 60)
         print(f"[+] SUCCESS: Direct connection worked! Found {total_found} banner(s)")
         print("[*] No proxy needed - saved proxy bandwidth!")
         print("=" * 60 + "\n")
         return results
 
-    # STEP 2: Direct connection failed, retry with proxy
+    # STEP 2: Direct connection geo-blocked or returned nothing → retry with proxy
     print("\n" + "=" * 60)
-    print("[!] Direct connection blocked or failed (0 images found)")
-    print("[*] Retrying with Oxylabs proxy...")
+    if is_blocked:
+        print("[!] Direct connection: geo-restricted. Retrying with proxy...")
+    else:
+        print("[!] Direct connection: 0 banners found. Retrying with proxy...")
     print("=" * 60 + "\n")
 
     if not use_env_proxy and not proxy:

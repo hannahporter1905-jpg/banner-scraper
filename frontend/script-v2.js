@@ -45,6 +45,8 @@ async function startScraping() {
     const location = parseInt(locationSelect.value);
     const headless = headlessToggle.checked;
 
+    console.log('Starting scrape:', { url, location, headless });
+
     // Reset UI
     hideAllSections();
     clearResults();
@@ -67,6 +69,7 @@ async function startScraping() {
     startBtn.textContent = 'Starting...';
 
     try {
+        console.log('Sending POST request to:', `${API_URL}/scrape`);
         // Start scraping session
         const response = await fetch(`${API_URL}/scrape`, {
             method: 'POST',
@@ -74,7 +77,9 @@ async function startScraping() {
             body: JSON.stringify({ url, location, headless })
         });
 
+        console.log('POST response status:', response.status, response.ok);
         const data = await response.json();
+        console.log('POST response data:', data);
 
         if (!response.ok) {
             throw new Error(data.error || 'Failed to start scraping');
@@ -93,6 +98,8 @@ async function startScraping() {
         pollSession();
 
     } catch (error) {
+        console.error('Start scraping error:', error);
+        console.error('Error stack:', error.stack);
         showError(error.message);
         resetButton();
     }
@@ -104,26 +111,38 @@ function pollSession() {
     // Poll every 2 seconds
     pollInterval = setInterval(async () => {
         try {
+            console.log(`Polling session: ${currentSessionId}`);
             const response = await fetch(`${API_URL}/scrape/${currentSessionId}`);
+            console.log('Response status:', response.status, response.ok);
+
             const data = await response.json();
+            console.log('Received data:', data);
 
             // Update progress log
+            console.log('Progress items:', data.progress);
             updateProgressLog(data.progress);
 
             // Check status
             if (data.status === 'completed') {
                 clearInterval(pollInterval);
+                console.log('Scrape completed, calling handleCompletion');
                 handleCompletion(data);
             } else if (data.status === 'error') {
                 clearInterval(pollInterval);
+                console.log('Scrape failed:', data.error);
                 handleError(data.error);
             } else {
                 // Still running
+                console.log('Still running...');
                 progressFill.style.width = '60%';
             }
 
         } catch (error) {
             console.error('Polling error:', error);
+            console.error('Error stack:', error.stack);
+            clearInterval(pollInterval);
+            showError('Polling failed: ' + error.message);
+            resetButton();
         }
     }, 2000);
 }
@@ -148,13 +167,21 @@ function updateProgressLog(progressItems) {
 
 function handleCompletion(data) {
     console.log('Scraping completed:', data);
+    console.log('Results object:', data.results);
+    console.log('Results type:', typeof data.results);
 
     progressFill.style.width = '100%';
     statusBadge.textContent = 'Completed';
     statusBadge.className = 'status-badge completed';
 
     // Display results
-    displayResults(data.results);
+    try {
+        displayResults(data.results);
+    } catch (error) {
+        console.error('Error displaying results:', error);
+        console.error('Error stack:', error.stack);
+        showError('Failed to display results: ' + error.message);
+    }
 
     resetButton();
 }
@@ -170,14 +197,25 @@ function handleError(error) {
 }
 
 function displayResults(results) {
+    console.log('displayResults called with:', results);
+    console.log('results type:', typeof results);
+
     if (!results) {
+        console.error('No results provided');
         showError('No results returned from scraper');
         return;
     }
 
+    console.log('results.homepage:', results.homepage);
+    console.log('results.promotions:', results.promotions);
+
     const homepageBanners = results.homepage || [];
     const promotionsBanners = results.promotions || [];
+    console.log('homepageBanners:', homepageBanners, 'length:', homepageBanners.length);
+    console.log('promotionsBanners:', promotionsBanners, 'length:', promotionsBanners.length);
+
     allBanners = [...homepageBanners, ...promotionsBanners];
+    console.log('allBanners:', allBanners, 'length:', allBanners.length);
 
     const totalCount = allBanners.length;
 
