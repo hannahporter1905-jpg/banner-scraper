@@ -836,19 +836,20 @@ def _scrape_current_page(page, page_label):
         )
     except Exception:
         pass
-    # Wait for actual banner-sized images to arrive (React/SPA API fetches complete).
-    # This fires as soon as the first large image is downloaded — no fixed sleep needed.
+    # Wait for banner-sized images to arrive (React/SPA API fetches complete).
+    # Fires immediately when a large image is ready; falls back to a fixed pause
+    # for CSS-background-only sites or very slow proxy connections.
     try:
         page.wait_for_function(
             "() => Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
             "  img => img.naturalWidth > 300"
             ")",
-            timeout=6000
+            timeout=10000
         )
     except Exception:
-        # No large img tags found yet — could be CSS-background-only or slow SPA.
-        # A short pause lets any in-flight API requests finish before we scroll.
-        time.sleep(1)
+        # No large img tags found yet — CSS-background-only or slow SPA through proxy.
+        # Give the app extra time to finish in-flight API requests before scrolling.
+        time.sleep(4)
 
     # Dismiss cookie consent banners and age-gate overlays before any interaction.
     # These block pointer events — carousels can't be clicked and lazy images won't load.
@@ -1225,13 +1226,16 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             # Phase 3: for React/Vue/Next.js CSR apps, content renders after
             # domcontentloaded. Extended to 20s because proxy adds latency to
             # every JS bundle / API request the app makes during render.
-            # Wait for a content-sized image (>300px) or substantial text.
-            # Tiny icons/logos/flags load first and would fire too early otherwise.
+            # Three early-exit signals (fastest to slowest):
+            #   1. links > 5  — nav bar mounts first (React hydration complete)
+            #   2. naturalWidth > 300 — a real banner image finished downloading
+            #   3. text > 200 — substantial text content rendered
             try:
                 page.wait_for_function(
                     "() => document.body && ("
+                    "  document.querySelectorAll('a[href]:not([href=\"\"])').length > 5 ||"
                     "  Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
-                    "    img => img.getBoundingClientRect().width > 300 || img.naturalWidth > 300"
+                    "    img => img.naturalWidth > 300"
                     "  ) ||"
                     "  document.body.innerText.trim().length > 200"
                     ")",
