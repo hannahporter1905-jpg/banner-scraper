@@ -826,6 +826,9 @@ def _scrape_current_page(page, page_label):
     # app mounts its nav bar (~1-3s for a direct connection, ~5-10s through proxy).
     # Then sleep to let the React component tree finish fetching promo API data.
     print(f"[*] Waiting for {page_label} to render...")
+    # Step 1: Wait for the React/SPA nav to mount — confirms JS has run and
+    # the app is hydrated. Links > 5 fires first (nav); text > 200 is a fallback
+    # for server-rendered pages that don't have many nav links.
     try:
         page.wait_for_function(
             "() => document.body && ("
@@ -836,20 +839,25 @@ def _scrape_current_page(page, page_label):
         )
     except Exception:
         pass
-    # Wait for banner-sized images to arrive (React/SPA API fetches complete).
-    # Fires immediately when a large image is ready; falls back to a fixed pause
-    # for CSS-background-only sites or very slow proxy connections.
+
+    # Step 2: Wait for hero/banner-sized images to finish downloading.
+    # Threshold is 600px wide — game thumbnails are typically 300-400px, hero
+    # sliders and promotional banners are 800px+ wide. This prevents scrolling
+    # before the above-fold banner content has actually loaded.
+    # 15s timeout covers slow proxy connections (each JS bundle + API call
+    # goes through the proxy, adding several seconds of latency).
+    print(f"[*] Waiting for banner images on {page_label}...")
     try:
         page.wait_for_function(
             "() => Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
-            "  img => img.naturalWidth > 300"
+            "  img => img.naturalWidth > 600"
             ")",
-            timeout=10000
+            timeout=15000
         )
     except Exception:
-        # No large img tags found yet — CSS-background-only or slow SPA through proxy.
-        # Give the app extra time to finish in-flight API requests before scrolling.
-        time.sleep(4)
+        # No banner-sized img tags found — either a CSS-background-only site, or
+        # React hasn't finished its API fetches yet. Sleep to let the app settle.
+        time.sleep(5)
 
     # Dismiss cookie consent banners and age-gate overlays before any interaction.
     # These block pointer events — carousels can't be clicked and lazy images won't load.
@@ -1227,15 +1235,16 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             # domcontentloaded. Extended to 20s because proxy adds latency to
             # every JS bundle / API request the app makes during render.
             # Three early-exit signals (fastest to slowest):
-            #   1. links > 5  — nav bar mounts first (React hydration complete)
-            #   2. naturalWidth > 300 — a real banner image finished downloading
-            #   3. text > 200 — substantial text content rendered
+            #   1. links > 5   — nav bar mounts (React hydration complete)
+            #   2. naturalWidth > 600 — a hero/banner image downloaded
+            #      (600px threshold skips small thumbnails/icons that load first)
+            #   3. text > 200  — substantial text rendered (server-rendered pages)
             try:
                 page.wait_for_function(
                     "() => document.body && ("
                     "  document.querySelectorAll('a[href]:not([href=\"\"])').length > 5 ||"
                     "  Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
-                    "    img => img.naturalWidth > 300"
+                    "    img => img.naturalWidth > 600"
                     "  ) ||"
                     "  document.body.innerText.trim().length > 200"
                     ")",
