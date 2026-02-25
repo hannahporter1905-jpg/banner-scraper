@@ -115,28 +115,34 @@ function pollSession() {
     if (!currentSessionId) return;
 
     const POLL_INTERVAL_MS = 2000;
-    const MAX_POLL_MINUTES = 3;
-    const MAX_POLLS = (MAX_POLL_MINUTES * 60 * 1000) / POLL_INTERVAL_MS; // 90 polls = 3 min
+    // Frontend timeout is 7 min — intentionally longer than the backend's 5-min
+    // process kill. This ensures the backend always finishes (success or its own
+    // timeout error) before the frontend gives up. If the frontend fired first,
+    // the user would see a false "timed out" even when the scrape was about to succeed.
+    const MAX_POLL_MINUTES = 7;
+    const MAX_POLLS = (MAX_POLL_MINUTES * 60 * 1000) / POLL_INTERVAL_MS; // 210 polls = 7 min
     let pollCount = 0;
     const pollStart = Date.now();
 
-    // Poll every 2 seconds, give up after 3 minutes
+    // Poll every 2 seconds, give up after 7 minutes
     pollInterval = setInterval(async () => {
         pollCount++;
 
-        // Railguard: stop polling if the backend never responds with completion
+        // Railguard: last-resort stop if the backend process never reported back
+        // (should not happen under normal conditions — backend kills at 5 min)
         if (pollCount > MAX_POLLS) {
             clearInterval(pollInterval);
-            showError(`Scraping timed out after ${MAX_POLL_MINUTES} minutes with no response. The site may be unreachable, heavily bot-protected, or the proxy location may be blocked. Try a different location or check the site manually.`);
+            showError(`No response after ${MAX_POLL_MINUTES} minutes. The server may have crashed or lost the session. Please try again.`);
             resetButton();
             return;
         }
 
-        // Show elapsed time so the user knows it's still running
+        // Show elapsed time so the user knows it's still running (not frozen)
         const elapsed = Math.floor((Date.now() - pollStart) / 1000);
         const mins = Math.floor(elapsed / 60);
         const secs = elapsed % 60;
-        statusText.textContent = `Scraping... ${mins > 0 ? mins + 'm ' : ''}${secs}s`;
+        const hint = elapsed > 90 ? ' — slow site, still working...' : '';
+        statusText.textContent = `Scraping... ${mins > 0 ? mins + 'm ' : ''}${secs}s${hint}`;
 
         try {
             console.log(`Polling session: ${currentSessionId} (poll ${pollCount}/${MAX_POLLS})`);
