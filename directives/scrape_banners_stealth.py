@@ -811,24 +811,44 @@ def _scrape_current_page(page, page_label):
     banners = []
 
     # Wait for page content to be ready.
-    # For CSR apps (React/Next.js), body starts empty and content renders via JS.
-    # We wait for either a real image (src present) or body text to confirm rendering.
+    # Wait for the React/SPA nav to mount, then give the app time to fetch
+    # promo data and render content images.
+    #
+    # Why NOT wait for large images (>300px) here:
+    #   On sites like spinjo.com, banner images are below the fold so their
+    #   getBoundingClientRect().width is 0 until scrolled into view. Waiting
+    #   for large images would time out and skip the rendering window.
+    #
+    # Why NOT wait for body text (>200 chars) alone:
+    #   Some casino sites have minimal text and all content is images.
+    #
+    # Best signal: wait for navigation links (>5) — fires the moment the React
+    # app mounts its nav bar (~1-3s for a direct connection, ~5-10s through proxy).
+    # Then sleep to let the React component tree finish fetching promo API data.
     print(f"[*] Waiting for {page_label} to render...")
     try:
         page.wait_for_function(
             "() => document.body && ("
-            "  document.querySelectorAll('img[src]:not([src=\"\"])').length > 0 ||"
-            "  document.body.innerText.trim().length > 100"
+            "  document.querySelectorAll('a[href]:not([href=\"\"])').length > 5 ||"
+            "  document.body.innerText.trim().length > 200"
             ")",
-            timeout=15000
+            timeout=20000
         )
     except Exception:
-        # Fallback: wait for any img element at minimum
-        try:
-            page.wait_for_selector('img', timeout=5000)
-        except Exception:
-            pass  # Truly nothing — will still check CSS backgrounds
-    time.sleep(1)
+        pass
+    # Wait for actual banner-sized images to arrive (React/SPA API fetches complete).
+    # This fires as soon as the first large image is downloaded — no fixed sleep needed.
+    try:
+        page.wait_for_function(
+            "() => Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
+            "  img => img.naturalWidth > 300"
+            ")",
+            timeout=6000
+        )
+    except Exception:
+        # No large img tags found yet — could be CSS-background-only or slow SPA.
+        # A short pause lets any in-flight API requests finish before we scroll.
+        time.sleep(1)
 
     # Dismiss cookie consent banners and age-gate overlays before any interaction.
     # These block pointer events — carousels can't be clicked and lazy images won't load.
@@ -903,6 +923,21 @@ def _scrape_current_page(page, page_label):
         pass
     time.sleep(0.5)
 
+    # Wait for lazy-loaded images to arrive after scrolling.
+    # Scrolling fires IntersectionObserver which triggers network requests for
+    # banner images. We wait up to 8s for the first large image (>300px) to
+    # finish downloading. Without this, extraction runs before images arrive.
+    try:
+        page.wait_for_function(
+            "() => Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
+            "  img => img.naturalWidth > 300"
+            ")",
+            timeout=8000
+        )
+    except Exception:
+        pass  # No large images (CSS-background-only site) — still scrape backgrounds
+    time.sleep(1)
+
     # Extract images
     print(f"[*] Extracting images from {page_label}...")
     images_data = page.evaluate("""
@@ -930,7 +965,7 @@ def _scrape_current_page(page, page_label):
                 let srcsetUrl = '';
                 if (srcsetRaw) {
                     const parts = srcsetRaw.split(',').map(s => {
-                        const p = s.trim().split(/\s+/);
+                        const p = s.trim().split(/[ \\t]+/);
                         const w = p[1] && p[1].endsWith('w') ? parseInt(p[1]) : 0;
                         return { url: p[0], w };
                     }).filter(p => p.url);
@@ -1093,8 +1128,11 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
 
             extra_headers = {
                 'Accept-Language': f"{geo['locale']},en;q=0.9",
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
+                # NOTE: Do NOT override Accept or Accept-Encoding here.
+                # Playwright sets them correctly per request type (HTML nav vs XHR vs image).
+                # Overriding globally breaks React SPAs that make JSON API calls — the
+                # server receives Accept:text/html for XHR and returns HTML instead of JSON,
+                # causing the app to render with no banner images (only 7 static images vs 337).
                 'DNT': '1', 'Connection': 'keep-alive', 'Upgrade-Insecure-Requests': '1'
             }
 
@@ -1187,11 +1225,15 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             # Phase 3: for React/Vue/Next.js CSR apps, content renders after
             # domcontentloaded. Extended to 20s because proxy adds latency to
             # every JS bundle / API request the app makes during render.
+            # Wait for a content-sized image (>300px) or substantial text.
+            # Tiny icons/logos/flags load first and would fire too early otherwise.
             try:
                 page.wait_for_function(
                     "() => document.body && ("
-                    "  document.querySelectorAll('img[src]:not([src=\"\"])').length > 0 ||"
-                    "  document.body.innerText.trim().length > 100"
+                    "  Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
+                    "    img => img.getBoundingClientRect().width > 300 || img.naturalWidth > 300"
+                    "  ) ||"
+                    "  document.body.innerText.trim().length > 200"
                     ")",
                     timeout=20000
                 )
@@ -1222,7 +1264,8 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
                 body_text_len = page.evaluate(
                     "() => (document.body && document.body.innerText || '').trim().length"
                 )
-                print(f"[*] html_len={html_len}  real_imgs={img_count}  text_len={body_text_len}")
+                link_count    = page.evaluate("() => document.querySelectorAll('a[href]:not([href=\"\"])').length")
+                print(f"[*] html_len={html_len}  real_imgs={img_count}  text_len={body_text_len}  links={link_count}")
 
                 empty_shell = html_len < 1000
                 no_content  = (not loaded_title.strip()) and img_count == 0 and body_text_len < 100

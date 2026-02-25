@@ -338,7 +338,7 @@ app.get('/api/download', async (req, res) => {
 });
 
 // Health check — update VERSION string on every deploy to confirm latest code is live
-const VERSION = '2026-02-25-v13-adaptive-scraper';
+const VERSION = '2026-02-25-v14-fix-accept-header';
 
 app.get('/api/health', (req, res) => {
   res.json({
