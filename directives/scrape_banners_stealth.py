@@ -5,6 +5,77 @@ import random
 import os
 from dotenv import load_dotenv
 
+# playwright-stealth works on Python <=3.11 (pkg_resources dependency).
+# On Python 3.12+ locally it may fail — inline JS stealth below always runs regardless.
+try:
+    from playwright_stealth import stealth_sync
+    _STEALTH_PKG = True
+except Exception:
+    _STEALTH_PKG = False
+
+# Comprehensive inline stealth JS — patches the fingerprint vectors casino sites check.
+# Runs always, regardless of whether the playwright-stealth package is available.
+_STEALTH_JS = """
+// 1. Remove webdriver flag
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// 2. Realistic plugins (Chrome)
+Object.defineProperty(navigator, 'plugins', { get: () => {
+    const arr = [
+        { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+        { name: 'Native Client',      filename: 'internal-nacl-plugin', description: '' }
+    ];
+    arr.item = i => arr[i]; arr.namedItem = n => arr.find(p => p.name === n);
+    return arr;
+}});
+
+// 3. Languages
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+// 4. Chrome runtime API (missing in headless)
+window.chrome = {
+    runtime: {
+        onMessage: { addListener: () => {} },
+        connect: () => ({ onMessage: { addListener: () => {} }, onDisconnect: { addListener: () => {} } })
+    },
+    loadTimes: () => ({}),
+    csi: () => ({})
+};
+
+// 5. Permissions API (headless returns denied for notifications)
+try {
+    const origQuery = window.navigator.permissions.query.bind(navigator.permissions);
+    window.navigator.permissions.query = (p) =>
+        p.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : origQuery(p);
+} catch(_) {}
+
+// 6. WebGL vendor/renderer (headless shows SwiftShader — a known bot signal)
+try {
+    const handler = {
+        apply(target, ctx, args) {
+            if (args[0] === 37445) return 'Intel Inc.';
+            if (args[0] === 37446) return 'Intel Iris OpenGL Engine';
+            return Reflect.apply(target, ctx, args);
+        }
+    };
+    WebGLRenderingContext.prototype.getParameter =
+        new Proxy(WebGLRenderingContext.prototype.getParameter, handler);
+    WebGL2RenderingContext.prototype.getParameter =
+        new Proxy(WebGL2RenderingContext.prototype.getParameter, handler);
+} catch(_) {}
+
+// 7. Outer dimensions (headless defaults differ from real browser)
+Object.defineProperty(window, 'outerWidth',  { get: () => window.innerWidth });
+Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85 });
+
+// 8. Screen color/pixel depth
+Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 });
+"""
+
 # Load proxy config from .env at project root
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
@@ -25,11 +96,8 @@ def get_proxy_from_env(country='US'):
     if not host or not port:
         return None
 
-    # Embed country in username for reliable Oxylabs geo-targeting
-    # Format: username-country-XX (e.g. aqaq1_xZnFG-country-CA)
-    if user and country:
-        user = f"{user}-country-{country.upper()}"
-
+    # Oxylabs Web Unblocker: country is targeted via x-oxylabs-geo-location header,
+    # NOT via username suffix. Plain username required or proxy returns 401.
     return {
         'server': f'{scheme}://{host}:{port}',
         'username': user,
@@ -37,15 +105,19 @@ def get_proxy_from_env(country='US'):
         'country': country,
     }
 
-def is_page_blocked(page):
+def is_page_blocked(page, target_url=None):
     """
     Detect geo-restriction / access-denied pages before scraping them.
 
-    Checks the page title and first 3000 chars of body text for phrases that
-    indicate the real site content was not served (e.g. "RESTRICTED REGION").
+    Checks:
+    1. Page title and body text for known block phrases
+    2. ISP redirect: if the loaded domain differs from the target domain, the ISP
+       intercepted the request and served its own block page (e.g. PAGCOR in PH).
+
     Returns True if blocked, False if the page looks like the real site.
     """
     block_phrases = [
+        # Generic geo-block language
         'restricted region', 'not available in your region',
         'not available in your country', 'not available in your area',
         'geographic restriction', 'geo restriction',
@@ -54,6 +126,22 @@ def is_page_blocked(page):
         'not accessible from your location', 'region not supported',
         'this site is not available', 'unavailable in your country',
         'this content is not available', 'service not available in your region',
+        # ISP / government block pages (e.g. Philippines PAGCOR, CICC)
+        'prohibited site', 'this site is blocked', 'site has been blocked',
+        'access to this site', 'internet access to this',
+        'blocked by', 'access is blocked', 'page is blocked',
+        'access restricted', 'restricted access',
+        'this page is restricted', 'site is restricted',
+        # Regulator / ISP identifiers that only appear on block pages
+        'pagcor', 'cicc.gov', 'sbmd',
+        # Common block page titles
+        'forbidden', 'access forbidden',
+        # Cloudflare / CAPTCHA walls
+        'just a moment', 'checking your browser', 'please wait',
+        'enable javascript and cookies',
+        # Age / jurisdiction gates
+        'not available in your jurisdiction', 'not licensed in your region',
+        'your country is not', 'unfortunately.*not available',
     ]
     try:
         title = (page.title() or '').lower()
@@ -61,7 +149,19 @@ def is_page_blocked(page):
             "() => (document.body && document.body.innerText || '').toLowerCase().slice(0, 3000)"
         )
         combined = title + ' ' + body_text
-        return any(phrase in combined for phrase in block_phrases)
+        if any(phrase in combined for phrase in block_phrases):
+            return True
+
+        # ISP redirect detection: loaded domain ≠ target domain
+        # (e.g., navigating to stake.com but ending up on blocked.sbmd.cicc.gov.ph)
+        if target_url:
+            target_domain = urlparse(target_url).netloc.lower().lstrip('www.')
+            loaded_domain = urlparse(page.url).netloc.lower().lstrip('www.')
+            if target_domain and loaded_domain and loaded_domain != target_domain:
+                print(f"[!] ISP redirect: {target_domain} → {loaded_domain}")
+                return True
+
+        return False
     except Exception:
         return False
 
@@ -77,40 +177,108 @@ def get_random_user_agent():
     ]
     return random.choice(user_agents)
 
-def is_banner_image(img_data):
-    """Improved banner detection logic"""
+def is_banner_image(img_data, in_carousel=False):
+    """
+    Detect promotional banner images. Two-stage check:
+    1. Exclude known non-banner patterns (logos, icons, badges, nav elements)
+       — always applied, even for carousel images
+    2. Include by aspect ratio, size, or promotional keywords
+       — relaxed thresholds when in_carousel=True
+
+    in_carousel=True relaxes Stage 2 size requirements (promo cards can be
+    smaller than full-width hero banners) but still requires minimum width and
+    aspect ratio to exclude square game tiles (380x380 etc.).
+    """
     width = img_data.get('width', 0)
     height = img_data.get('height', 0)
     src = img_data.get('src', '').lower()
     alt = img_data.get('alt', '').lower()
     classes = img_data.get('class', '').lower()
     parent_classes = img_data.get('parent_class', '').lower()
-    
-    # Expanded banner keywords
+
+    all_text = f"{src} {alt} {classes} {parent_classes}"
+
+    # Reject broken image references: if dimensions are both zero AND the src URL
+    # has no image file extension, it's a placeholder or a failed lazy-load reference.
+    _IMG_EXTS = ('.jpg', '.jpeg', '.webp', '.png', '.gif', '.avif', '.svg')
+    if width == 0 and height == 0 and not any(ext in src for ext in _IMG_EXTS):
+        return False
+
+    # --- STAGE 1: Exclude non-banner images (always runs, even for carousel) ---
+    # Logos, icons, flags, badges, compliance images
+    exclude_keywords = [
+        'logo', 'icon', 'badge', 'seal', 'flag', 'avatar', 'thumbnail',
+        'favicon', 'sprite', 'rating', 'star', 'review', 'award',
+        'certificate', 'certified', 'responsible', 'therapy', 'aware',
+        'gambling-therapy', 'begambleaware', 'gamcare', 'gamstop',
+        'payment', 'visa', 'mastercard', 'paypal', 'trustly', 'skrill',
+        'lang', 'language', 'country-flag', 'social', 'twitter', 'facebook',
+        # Game tiles (alt text often ends in "game tile")
+        'game tile',
+        # Mini-game section thumbnails (game category images, not promo banners)
+        'mini-game',
+        # Popup / modal overlay images
+        'pop-up', 'popup', 'modal',
+        # Game list / game section background images
+        'game-list', 'game_list',
+    ]
+    # Exclude structural/nav parent containers
+    exclude_parents = ['nav', 'navbar', 'footer', 'header-logo', 'site-logo']
+
+    if any(kw in all_text for kw in exclude_keywords):
+        return False
+    if any(kw in parent_classes for kw in exclude_parents):
+        return False
+    # Skip SVGs that are clearly logos (small, square-ish, in header)
+    if src.endswith('.svg') and (width < 600 or (width > 0 and height > 0 and width / height < 2)):
+        return False
+
+    # --- STAGE 2: Include by positive signals ---
     banner_keywords = [
         'banner', 'hero', 'slider', 'carousel', 'slideshow',
-        'header', 'jumbotron', 'masthead', 'cover', 'featured',
+        'jumbotron', 'masthead', 'cover', 'featured',
         'promo', 'promotion', 'landing', 'splash', 'billboard',
-        'spotlight', 'showcase', 'highlight', 'campaign'
+        'spotlight', 'showcase', 'highlight', 'campaign', 'offer',
+        'bonus', 'deposit', 'welcome', 'free-spin',
     ]
-    
-    # Check aspect ratio (wide images are typically banners)
+
+    if in_carousel:
+        # In the carousel branch, only check keywords against src/alt/own-class.
+        # parent_classes always contain "carousel"/"slider" (that's how in_carousel was
+        # detected), so using all_text would falsely match those same words against
+        # banner_keywords and admit every game tile in every carousel.
+        content_text = f"{src} {alt} {classes}"
+
+        # Size/ratio check: excludes square game tiles (380×380 → ratio 1.0, width 380)
+        if width > 0 and height > 0:
+            aspect_ratio = width / height
+            if aspect_ratio > 1.3 and width > 600:
+                return True
+        if width > 1000:
+            return True
+        # Promotional keyword in the image's own src/alt/class (not container classes)
+        for keyword in banner_keywords:
+            if keyword in content_text:
+                return True
+        return False
+
+    # Standard aspect ratio: genuinely wide promotional images (not logos)
     if width > 0 and height > 0:
         aspect_ratio = width / height
-        # Common banner aspect ratios: 16:9, 3:1, 4:1, etc.
-        if (aspect_ratio > 2.0 and width > 500) or (aspect_ratio > 1.5 and width > 800):
+        if aspect_ratio > 2.5 and width > 600:
             return True
-    
-    # Very wide images are almost always banners
+        if aspect_ratio > 1.8 and width > 900:
+            return True
+
+    # Very large images (full-width banners)
     if width > 1200:
         return True
-    
-    # Check keywords in various attributes
+
+    # Promotional keywords in src/alt/class
     for keyword in banner_keywords:
-        if (keyword in src or keyword in alt or 
-            keyword in classes or keyword in parent_classes):
+        if keyword in all_text:
             return True
-    
+
     return False
 
 def scrape_website_banners_stealth(url, headless=True, location='US', proxy=None, use_env_proxy=True):
@@ -354,7 +522,7 @@ def scrape_website_banners_stealth(url, headless=True, location='US', proxy=None
                 if not img_data['visible'] and not img_data.get('in_carousel'):
                     continue
 
-                if is_banner_image(img_data) or img_data.get('in_carousel'):
+                if is_banner_image(img_data, in_carousel=img_data.get('in_carousel', False)):
                     banners.append({
                         'src': img_data['src'],
                         'alt': img_data['alt'] or 'Banner image',
@@ -458,36 +626,61 @@ def _click_promo_link(page, base_url):
     base_domain = urlparse(base_url).netloc
     keywords_pattern = '|'.join(PROMO_KEYWORDS)
 
-    # Use Playwright locators to find and click a matching <a> link
-    # Check all anchors on the page for promo keywords in text or href
+    # Score every anchor and pick the best promotions link.
+    # Scoring: URL path match (+10) >> exact text match (+5) >> partial text match (+2)
+    # Game category paths (/games/, /slots/, bonus-buy, etc.) are excluded first.
     clicked = page.evaluate("""
         (args) => {
-            const keywords = args.keywords;
-            const baseDomain = args.baseDomain;
-            const anchors = document.querySelectorAll('a[href]');
+            const promoPathKws  = args.promoPathKws;
+            const promoTextKws  = args.promoTextKws;
+            const gamePathPats  = args.gamePathPats;
+            const baseDomain    = args.baseDomain;
+            const anchors       = document.querySelectorAll('a[href]');
+
+            let best = null;
+            let bestScore = -1;
 
             for (const a of anchors) {
                 const href = a.href || '';
                 const text = (a.textContent || '').trim().toLowerCase();
-                const path = (new URL(href, document.location.origin)).pathname.toLowerCase();
+                let path = '';
 
-                // Skip external links
                 try {
-                    const linkDomain = new URL(href).hostname;
+                    const u = new URL(href, document.location.origin);
+                    const linkDomain = u.hostname;
                     if (linkDomain && linkDomain !== baseDomain) continue;
-                } catch(e) {}
+                    path = u.pathname.toLowerCase();
+                } catch(e) { continue; }
 
-                // Check if text or path matches any promo keyword
-                const matches = keywords.some(kw => text.includes(kw) || path.includes(kw));
-                if (matches) {
-                    // Scroll the link into view and click it
-                    a.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    return { found: true, text: text, href: href };
+                // Skip game category / non-promo pages
+                if (gamePathPats.some(p => path.includes(p))) continue;
+
+                let score = 0;
+                // Strong signal: promo keyword appears in the URL path itself
+                if (promoPathKws.some(kw => path.includes(kw))) score += 10;
+                // Medium signal: link text is exactly a promo word
+                if (promoTextKws.some(kw => text === kw)) score += 5;
+                // Weak signal: link text contains a promo word
+                else if (promoTextKws.some(kw => text.includes(kw))) score += 2;
+
+                if (score > 0 && score > bestScore) {
+                    bestScore = score;
+                    best = { text: text, href: href };
                 }
             }
-            return { found: false };
+
+            if (!best) return { found: false };
+            return { found: true, text: best.text, href: best.href };
         }
-    """, {'keywords': PROMO_KEYWORDS, 'baseDomain': base_domain})
+    """, {
+        'promoPathKws': ['promo', 'promotion', 'offer', 'bonus', 'reward', 'deal',
+                         'cashback', 'free-spin', 'freebet', 'free-bet', 'campaign'],
+        'promoTextKws': ['promo', 'promotion', 'promotions', 'bonus', 'bonuses',
+                         'offer', 'offers', 'reward', 'rewards', 'deal', 'campaign'],
+        'gamePathPats': ['/games/', '/slots/', '/live-casino/', '/table-games/',
+                         '/jackpots/', 'bonus-buy', '/casino-games/'],
+        'baseDomain': base_domain,
+    })
 
     if not clicked['found']:
         return False
@@ -500,26 +693,15 @@ def _click_promo_link(page, base_url):
 
         # Actually click it using Playwright's click (handles SPA navigation, overlays, etc.)
         try:
-            # Build a selector that matches the link we found
             href = clicked['href']
-            # Try clicking by href match
             link = page.locator(f'a[href="{href}"]').first
             link.click(timeout=5000)
         except Exception:
-            # Fallback: click via JS
-            page.evaluate("""
-                (args) => {
-                    const anchors = document.querySelectorAll('a[href]');
-                    for (const a of anchors) {
-                        const text = (a.textContent || '').trim().toLowerCase();
-                        const path = (new URL(a.href, document.location.origin)).pathname.toLowerCase();
-                        if (args.keywords.some(kw => text.includes(kw) || path.includes(kw))) {
-                            a.click();
-                            break;
-                        }
-                    }
-                }
-            """, {'keywords': PROMO_KEYWORDS})
+            # Fallback: navigate directly to the href we already scored and selected
+            try:
+                page.goto(clicked['href'], wait_until='domcontentloaded', timeout=20000)
+            except Exception:
+                pass
 
         # Wait for navigation / page transition
         print("[*] Waiting for promotions page to load...")
@@ -535,14 +717,16 @@ def _click_promo_link(page, base_url):
 
         # Wait for page to stabilize after navigation
         try:
-            # Wait for DOM to be ready first
             page.wait_for_load_state('domcontentloaded', timeout=15000)
-            # Then wait for network to settle
-            page.wait_for_load_state('networkidle', timeout=30000)
-        except Exception as e:
-            print(f"    (Page load didn't fully complete, continuing anyway)")
+        except Exception:
+            print(f"    (domcontentloaded timed out, continuing)")
+        # Short networkidle grace — casino promo pages rarely reach full idle
+        try:
+            page.wait_for_load_state('networkidle', timeout=8000)
+        except Exception:
+            pass
 
-        time.sleep(random.uniform(2, 4))
+        time.sleep(random.uniform(1.5, 2.5))
         return True
 
     except Exception as e:
@@ -554,19 +738,33 @@ def _scrape_current_page(page, page_label):
     """Extract banners from the currently loaded page. Returns list of banner dicts."""
     banners = []
 
-    # Wait for content to render
+    # Wait for at least one <img> to appear in DOM (handles slow JS-rendered sites).
+    # Use wait_for_selector instead of a fixed sleep — exits as soon as content is ready.
     print(f"[*] Waiting for {page_label} to render...")
-    time.sleep(random.uniform(3, 5))
+    try:
+        page.wait_for_selector('img', timeout=15000)
+    except Exception:
+        pass  # No img elements yet — will still check CSS backgrounds
+    time.sleep(random.uniform(1, 2))
 
-    # Scroll to load lazy images
+    # Scroll to load lazy images. Guard against null document.body (can happen
+    # when the page is a bot-wall that hasn't rendered yet).
     print(f"[*] Scrolling {page_label}...")
-    for i in range(5):
-        scroll_pct = (i + 1) * 20
-        page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {scroll_pct / 100})")
-        time.sleep(random.uniform(1, 2))
+    for i in range(4):
+        scroll_pct = (i + 1) * 25
+        try:
+            page.evaluate(
+                f"() => {{ if (document.body) window.scrollTo(0, document.body.scrollHeight * {scroll_pct / 100}); }}"
+            )
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.8, 1.5))
 
-    page.evaluate("window.scrollTo(0, 0)")
-    time.sleep(2)
+    try:
+        page.evaluate("() => { if (document.body) window.scrollTo(0, 0); }")
+    except Exception:
+        pass
+    time.sleep(1.5)
 
     # Cycle carousels
     print(f"[*] Cycling carousels on {page_label}...")
@@ -634,7 +832,7 @@ def _scrape_current_page(page, page_label):
             continue
         if not img['visible'] and not img.get('in_carousel'):
             continue
-        if is_banner_image(img) or img.get('in_carousel'):
+        if is_banner_image(img, in_carousel=img.get('in_carousel', False)):
             banners.append({
                 'src': img['src'],
                 'alt': img['alt'] or 'Banner image',
@@ -677,8 +875,21 @@ def _scrape_current_page(page, page_label):
                 'type': 'Background Banner', 'page': page_label,
             })
 
-    print(f"[+] {len(banners)} banners from {page_label}")
-    return banners
+    # Deduplicate within this page (carousels sometimes clone slides)
+    seen_page = set()
+    unique_banners = []
+    for b in banners:
+        try:
+            p = urlparse(b['src'])
+            key = p._replace(query='', fragment='').geturl()
+        except Exception:
+            key = b['src']
+        if key not in seen_page:
+            seen_page.add(key)
+            unique_banners.append(b)
+
+    print(f"[+] {len(unique_banners)} banners from {page_label}")
+    return unique_banners
 
 
 def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
@@ -711,10 +922,19 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             browser = p.chromium.launch(
                 headless=headless,
                 args=[
+                    # Anti-detection
                     '--disable-blink-features=AutomationControlled',
+                    # Stability in Docker / Cloud Run (Linux only flags)
                     '--disable-dev-shm-usage',
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
+                    '--disable-gpu',
+                    # NOTE: --single-process is Linux-only; causes navigation failure on Windows
+                    # Rendering
+                    '--window-size=1920,1080',
+                    '--hide-scrollbars',
+                    '--mute-audio',
+                    # Network
                     '--disable-web-security',
                     '--disable-features=IsolateOrigins,site-per-process',
                     '--ignore-certificate-errors',
@@ -755,28 +975,123 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             context_options['extra_http_headers'] = extra_headers
 
             context = browser.new_context(**context_options)
-            context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
-                window.chrome = { runtime: {} };
-            """)
 
             page = context.new_page()
+
+            # Layer 1: inline JS stealth (always runs, works on all Python versions)
+            context.add_init_script(_STEALTH_JS)
+
+            # Layer 2: playwright-stealth package (additional patches, when available)
+            if _STEALTH_PKG:
+                stealth_sync(page)
+                print("[*] Stealth: inline JS + playwright-stealth package")
+            else:
+                print("[*] Stealth: inline JS only (playwright-stealth unavailable locally)")
 
             # --- STEP 1: Homepage ---
             print("=" * 60)
             print("[*] STEP 1: Scraping homepage...")
             print("=" * 60)
 
+            # Two-phase navigation strategy:
+            #
+            # Phase 1 — commit (fast): fires as soon as the first HTTP response byte
+            # arrives. Lets us check immediately whether the proxy returned real content
+            # or a tiny empty shell (e.g. stake.com returns 39 bytes → bail fast).
+            #
+            # Phase 2 — domcontentloaded (slower): only run if Phase 1 produced real
+            # content. Waits for HTML parsing to complete so JS-rendered images appear.
             try:
-                page.goto(url, wait_until='networkidle', timeout=45000)
-            except Exception:
-                print("    (network didn't fully idle, continuing...)")
+                page.goto(url, wait_until='commit', timeout=30000)
+            except Exception as e:
+                print(f"    (connection timed out: {type(e).__name__})")
 
-            # Detect geo-block / access-denied pages BEFORE scraping
-            # (so we don't return the block page's images as real banners)
-            if is_page_blocked(page):
+            # Immediate shell-size check right after first byte.
+            # If tiny (<= 200 bytes) the proxy returned nothing useful — no need to wait.
+            try:
+                immediate_len = page.evaluate("() => document.documentElement.outerHTML.length")
+                if immediate_len <= 200:
+                    print(f"[!] Empty shell received immediately (html_len={immediate_len}) — proxy blocked by site")
+                    results['blocked'] = True
+                    browser.close()
+                    return results
+            except Exception:
+                pass
+
+            # Phase 2: wait for DOM to finish parsing (JS-rendered content needs this)
+            dom_loaded = False
+            try:
+                page.wait_for_load_state('domcontentloaded', timeout=25000)
+                dom_loaded = True
+            except Exception:
+                # domcontentloaded timed out — check if there's ANY content yet.
+                # If there isn't (proxy returned nothing useful), exit immediately
+                # rather than waiting another 8s for networkidle.
+                try:
+                    interim_imgs = page.evaluate("() => document.querySelectorAll('img').length")
+                    interim_text = page.evaluate(
+                        "() => (document.body && document.body.innerText || '').trim().length"
+                    )
+                    if interim_imgs == 0 and interim_text < 100:
+                        print(f"    (domcontentloaded timed out with no content — bailing early)")
+                        results['blocked'] = True
+                        browser.close()
+                        return results
+                except Exception:
+                    pass
+                print(f"    (domcontentloaded timed out, but content exists — continuing)")
+
+            # Give JS-heavy pages a short grace window to settle (skip if we already
+            # know domcontentloaded timed out and we still decided to continue)
+            if dom_loaded:
+                try:
+                    page.wait_for_load_state('networkidle', timeout=8000)
+                except Exception:
+                    pass  # Fine — casino SPAs rarely reach networkidle
+
+            # Debug: log what page actually loaded (helps diagnose bot-wall pages)
+            try:
+                loaded_url = page.url
+                loaded_title = page.title()
+                print(f"[*] Loaded: {loaded_url}")
+                print(f"[*] Title:  {loaded_title}")
+            except Exception:
+                loaded_url = ''
+
+            # Bail out if navigation never completed (DNS fail, network error, etc.)
+            # 'about:blank' means the proxy couldn't connect to the target at all.
+            if not loaded_url or loaded_url in ('about:blank', '') or loaded_url.startswith('chrome-error://'):
+                print("[-] Navigation failed — proxy could not reach the target site")
+                browser.close()
+                return results
+
+            # Detect empty/useless page responses before spending 30+ seconds scraping.
+            # Covers two failure modes:
+            #   a) Proxy returned a bare HTML shell (html_len < 1000, e.g. stake.com = 39-881 chars)
+            #   b) JS ran but produced nothing: no title + no images + no visible text
+            # Both indicate the proxy could not load the real site content.
+            try:
+                html_len  = page.evaluate("() => document.documentElement.outerHTML.length")
+                img_count = page.evaluate("() => document.querySelectorAll('img').length")
+                body_text_len = page.evaluate(
+                    "() => (document.body && document.body.innerText || '').trim().length"
+                )
+                print(f"[*] html_len={html_len}  imgs={img_count}  text_len={body_text_len}")
+
+                empty_shell = html_len < 1000
+                no_content  = (not loaded_title.strip()) and img_count == 0 and body_text_len < 100
+
+                if empty_shell or no_content:
+                    print(f"[!] Page has no usable content — proxy blocked or site unreachable")
+                    results['blocked'] = True
+                    browser.close()
+                    return results
+            except Exception:
+                pass
+
+            # Detect geo-block / access-denied pages BEFORE scraping.
+            # Pass target url so domain-mismatch (ISP redirect) is also detected.
+            if is_page_blocked(page, target_url=url):
                 print(f"[!] Geo-restriction detected on homepage — not the real site")
                 results['blocked'] = True
                 browser.close()
@@ -802,13 +1117,24 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
 
             browser.close()
 
-            # Deduplicate across both pages
+            # Deduplicate across both pages using normalised URL as the key.
+            # Normalisation strips query-string + fragment so that the same image
+            # at different resolutions (e.g. banner.jpg?w=1920 vs ?w=800) counts
+            # as one entry — but the original URL is preserved in the output.
+            def _norm(src):
+                try:
+                    p = urlparse(src)
+                    return p._replace(query='', fragment='').geturl()
+                except Exception:
+                    return src
+
             seen = set()
-            for key in results:
+            for key in ('homepage', 'promotions'):
                 unique = []
-                for b in results[key]:
-                    if b['src'] not in seen:
-                        seen.add(b['src'])
+                for b in results.get(key, []):
+                    key_url = _norm(b['src'])
+                    if key_url not in seen:
+                        seen.add(key_url)
                         unique.append(b)
                 results[key] = unique
 

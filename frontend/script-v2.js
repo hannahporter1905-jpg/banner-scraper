@@ -40,6 +40,12 @@ urlInput.addEventListener('keypress', (e) => {
 });
 downloadAllBtn.addEventListener('click', downloadAllUrls);
 
+// Update toggle label text to reflect current browser mode
+const toggleText = document.querySelector('.toggle-text');
+headlessToggle.addEventListener('change', () => {
+    toggleText.textContent = headlessToggle.checked ? 'Headless' : 'Visible';
+});
+
 async function startScraping() {
     const url = urlInput.value.trim();
     const location = parseInt(locationSelect.value);
@@ -253,18 +259,40 @@ function displayResults(results) {
     }
 }
 
+/**
+ * Extract the human-readable filename from a banner URL.
+ * e.g. ".../PromoMob-Sun.jpg" → "PromoMob-Sun"
+ *      ".../eyJf...Q==/ND_HP_Desktop11_1.jpg" → "ND_HP_Desktop11_1"
+ */
+function getImageName(src) {
+    try {
+        const pathname = new URL(src).pathname;
+        const raw = pathname.split('/').pop().split('?')[0]; // last path segment, no query
+        return raw.replace(/\.[^.]+$/, '') || 'banner';      // strip extension
+    } catch {
+        return 'banner';
+    }
+}
+
 function createBannerCard(banner, id) {
+    const imgName = getImageName(banner.src);
+    // Preserve the original extension for the downloaded file
+    const extMatch = banner.src.match(/\.(jpg|jpeg|webp|png|gif|avif|svg)(\?|$)/i);
+    const ext = extMatch ? extMatch[1].toLowerCase() : 'jpg';
+    const dlFilename = `${imgName}.${ext}`;
+    const downloadUrl = `${API_URL}/download?url=${encodeURIComponent(banner.src)}&filename=${encodeURIComponent(dlFilename)}`;
+
     return `
         <div class="banner-card" id="${id}">
             <img
                 src="${banner.src}"
-                alt="${banner.alt || 'Banner image'}"
+                alt="${banner.alt || imgName}"
                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22200%22%3E%3Crect fill=%22%23ddd%22 width=%22400%22 height=%22200%22/%3E%3Ctext fill=%22%23999%22 x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22%3EImage Load Error%3C/text%3E%3C/svg%3E'"
             >
             <div class="banner-info">
-                <h4>${banner.type || 'Banner Image'}</h4>
+                <h4 title="${banner.src}">${imgName}</h4>
                 <p class="banner-url">${banner.src}</p>
-                <a href="${banner.src}" target="_blank" class="banner-download" download>
+                <a href="${downloadUrl}" class="banner-download" download="${dlFilename}">
                     Download Image
                 </a>
             </div>
