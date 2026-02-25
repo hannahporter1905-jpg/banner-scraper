@@ -230,6 +230,7 @@ function displayResults(results) {
         emptyState.classList.remove('hidden');
         homepageSection.classList.add('hidden');
         promotionsSection.classList.add('hidden');
+        resultCount.textContent = '0 banners found';
         return;
     }
 

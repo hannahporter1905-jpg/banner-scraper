@@ -111,7 +111,7 @@ PROXY_SCHEME=https
 No spaces around `=`. Never commit this file.
 
 **Location codes** (used by `scrape_api.py`):
-`1=US, 2=UK, 3=CA, 4=AU, 5=DE, 6=FR, 7=JP, 8=BR, 9=IN, 10=SG`
+`0=No Proxy / Direct, 1=US, 2=UK, 3=CA, 4=AU, 5=DE, 6=FR, 7=JP, 8=BR, 9=IN, 10=SG`
 
 ---
 
@@ -147,8 +147,9 @@ python execution/test_proxy.py
 | Level | Sites |
 |-------|-------|
 | Low | `casinomeister.com`, `askgamblers.com` |
-| Medium | `casinobonusca.com`, `betway.com` |
+| Medium | `casinobonusca.com`, `betway.com`, `tooniebet.ca` (CA geo, CSR) |
 | High (expect failures) | `novadreams.com`, `bet365.com` |
+| Unscrapable | `stake.com` (Enterprise Cloudflare + PAGCOR block in PH) |
 
 **Expected results per scrape:** 1–10 homepage banners, 5–20 promotions banners, deduplicated and grouped by page.
 
@@ -168,7 +169,7 @@ python execution/test_proxy.py
 
 ### Location code error (integer vs string mismatch)
 - Already fixed in `scrape_api.py` via `location_map` dict
-- If you see it again: ensure frontend sends integer 1–10, not a string like "US"
+- If you see it again: ensure frontend sends integer 0–10, not a string like "US"
 
 ### JSON parse error in backend
 - Already fixed in `server-playwright.js` — parses JSON from the *end* of Python stdout
@@ -178,6 +179,32 @@ python execution/test_proxy.py
 ```bash
 pip install playwright && playwright install chromium
 ```
+
+### 0 banners on a React/CSR site (Next.js, Vue SPA, etc.)
+**Cause:** React renders AFTER `domcontentloaded`. Body + images are empty at first load.
+- Symptoms: `html_len > 5000, real_imgs=0, text_len=0` in the log
+- Fix already applied: Phase 3 wait (`wait_for_function`) up to 20s; proxy adds latency
+- If still 0: the site's hero may be CSS-background only — check `bg_images` extraction
+- If still 0: try increasing `timeout=20000` in Phase 3 and `_scrape_current_page` wait
+
+### Cookie/consent banner blocking carousel clicks
+**Cause:** GDPR/cookie overlays intercept pointer events until dismissed.
+- Fix already applied: `_dismiss_overlays()` runs before scroll/carousel in `_scrape_current_page`
+- If a new CMP pattern appears: add its "accept" button selector to `_dismiss_overlays`
+
+### Only 1 carousel cycled (multi-carousel pages)
+**Cause:** Old code used `querySelector` (first match only).
+- Fix already applied: now uses `querySelectorAll` + `WeakSet` to click ALL carousels
+
+### ISP/government redirect (e.g. Philippines PAGCOR block)
+- Direct page loads fine locally but proxy detects ISP redirect: loaded domain ≠ target domain
+- `is_page_blocked` catches this via domain-mismatch check
+- Retry with different proxy country or accept that site is region-locked
+
+### stake.com (Cloudflare Enterprise + geo-block)
+- Enterprise Cloudflare cannot be bypassed by Oxylabs Web Unblocker
+- Script times out in ~30s then cleanly returns blocked status
+- Residential proxies would be needed; not currently supported
 
 ---
 
@@ -220,5 +247,5 @@ Vercel/Netlify/Railway **cannot run Playwright** — binary size and timeout lim
 
 ---
 
-**Last updated:** 2026-02-23
-**Version:** 1.2 (Accurate file map, cleaned up structure, added test_proxy.py)
+**Last updated:** 2026-02-25
+**Version:** 1.3 (Added no-proxy option, overlay dismissal, multi-carousel support, data-bg scan, CSR wait improvements, broader banner thresholds)

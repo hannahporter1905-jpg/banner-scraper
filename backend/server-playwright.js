@@ -49,16 +49,17 @@ app.post('/api/scrape', async (req, res) => {
     return res.status(400).json({ error: 'Invalid URL format' });
   }
 
-  // Validate location
-  if (!LOCATIONS[location]) {
-    return res.status(400).json({ error: 'Invalid location (must be 1-10)' });
+  // location=0 means "No Proxy / Direct" — valid even though not in LOCATIONS map
+  const noProxy = (location === 0);
+  if (!noProxy && !LOCATIONS[location]) {
+    return res.status(400).json({ error: 'Invalid location (must be 0-10, where 0 = No Proxy)' });
   }
 
   const sessionId = Date.now().toString();
   const session = {
     id: sessionId,
     url,
-    location: LOCATIONS[location],
+    location: noProxy ? 'Direct' : LOCATIONS[location],
     headless,
     status: 'running',
     progress: [],
@@ -74,12 +75,17 @@ app.post('/api/scrape', async (req, res) => {
   const args = [
     pythonScript,
     '--url', url,
-    '--location', location.toString(),
     '--headless', headless ? 'true' : 'false',
     '--json'
   ];
 
-  console.log(`[${sessionId}] Starting scrape: ${url} (${LOCATIONS[location]})`);
+  if (noProxy) {
+    args.push('--no-proxy');
+  } else {
+    args.push('--location', location.toString());
+  }
+
+  console.log(`[${sessionId}] Starting scrape: ${url} (${noProxy ? 'No Proxy' : LOCATIONS[location]})`);
 
   const pythonProcess = spawn('python', args, {
     cwd: path.join(__dirname, '..')
@@ -332,7 +338,7 @@ app.get('/api/download', async (req, res) => {
 });
 
 // Health check — update VERSION string on every deploy to confirm latest code is live
-const VERSION = '2026-02-25-v11-smart-block-detect';
+const VERSION = '2026-02-25-v13-adaptive-scraper';
 
 app.get('/api/health', (req, res) => {
   res.json({

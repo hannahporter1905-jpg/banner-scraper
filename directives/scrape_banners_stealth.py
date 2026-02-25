@@ -265,12 +265,14 @@ def is_banner_image(img_data, in_carousel=False):
     # Standard aspect ratio: genuinely wide promotional images (not logos)
     if width > 0 and height > 0:
         aspect_ratio = width / height
-        if aspect_ratio > 2.5 and width > 600:
+        if aspect_ratio > 2.5 and width > 600:      # ultra-wide banners (5:2+)
             return True
-        if aspect_ratio > 1.8 and width > 900:
+        if aspect_ratio > 1.8 and width > 900:      # widescreen at full-column width
             return True
+        if aspect_ratio > 1.5 and width > 950:      # promo cards (3:2, 16:10, etc.)
+            return True                              # width > 950 to skip article thumbnails
 
-    # Very large images (full-width banners)
+    # Very large images (full-width hero banners regardless of ratio)
     if width > 1200:
         return True
 
@@ -734,18 +736,104 @@ def _click_promo_link(page, base_url):
         return False
 
 
+def _dismiss_overlays(page):
+    """
+    Try to dismiss cookie consent banners, GDPR notices, and age-gate overlays.
+
+    These overlays intercept pointer events so carousel buttons can't be clicked
+    and lazy-load images never reveal themselves. We try to dismiss them before
+    any scrolling or carousel interaction.
+
+    Returns True if something was clicked, False otherwise.
+    """
+    try:
+        dismissed = page.evaluate("""
+            () => {
+                const selectors = [
+                    // ── OneTrust (very widely deployed) ──────────────────────────
+                    '#onetrust-accept-btn-handler',
+                    '#onetrust-reject-all-handler',
+                    // ── Cookiebot ────────────────────────────────────────────────
+                    '#CybotCookiebotDialogBodyButtonAccept',
+                    '#CybotCookiebotDialogBodyLevelButtonAcceptAll',
+                    // ── Cookie Consent JS library ────────────────────────────────
+                    '.cc-accept', '.cc-allow', '.cc-dismiss',
+                    // ── TrustArc / TRUSTe ────────────────────────────────────────
+                    '.truste_popframe .pdynamicbutton a',
+                    // ── Generic accept / agree patterns ─────────────────────────
+                    'button[id*="accept-all" i]',
+                    'button[id*="acceptAll" i]',
+                    'button[id*="accept-cookies" i]',
+                    'button[id*="acceptcookies" i]',
+                    'button[class*="accept-all" i]',
+                    'button[class*="acceptAll" i]',
+                    '[data-action="accept"]',
+                    '[data-testid*="accept" i]',
+                    '[aria-label*="accept all" i]',
+                    '[class*="cookie-accept" i]',
+                    '[class*="CookieConsent"] button[class*="accept" i]',
+                    '[class*="cookie-banner"] button:first-of-type',
+                    '[class*="cookie-notice"] button:first-of-type',
+                    '[id*="cookie-banner"] button:first-of-type',
+                    // ── Age verification / enter-site gates ─────────────────────
+                    '[class*="age-gate"] button:first-of-type',
+                    '[id*="age-gate"] button:first-of-type',
+                    '[class*="age-verification"] button:first-of-type',
+                    '[id*="age-verification"] button:first-of-type',
+                    '[class*="ageGate"] button:first-of-type',
+                    '[class*="age_gate"] button:first-of-type',
+                    '[data-age-gate] button:first-of-type',
+                    '.enter-site-button',
+                ];
+                for (const sel of selectors) {
+                    try {
+                        const el = document.querySelector(sel);
+                        // offsetParent === null means the element is hidden (display:none)
+                        if (el && el.offsetParent !== null) {
+                            el.click();
+                            return sel;
+                        }
+                    } catch (_) {}
+                }
+                return null;
+            }
+        """)
+        if dismissed:
+            print(f"    [*] Dismissed overlay: {dismissed}")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _scrape_current_page(page, page_label):
     """Extract banners from the currently loaded page. Returns list of banner dicts."""
     banners = []
 
-    # Wait for at least one <img> to appear in DOM (handles slow JS-rendered sites).
-    # Use wait_for_selector instead of a fixed sleep — exits as soon as content is ready.
+    # Wait for page content to be ready.
+    # For CSR apps (React/Next.js), body starts empty and content renders via JS.
+    # We wait for either a real image (src present) or body text to confirm rendering.
     print(f"[*] Waiting for {page_label} to render...")
     try:
-        page.wait_for_selector('img', timeout=15000)
+        page.wait_for_function(
+            "() => document.body && ("
+            "  document.querySelectorAll('img[src]:not([src=\"\"])').length > 0 ||"
+            "  document.body.innerText.trim().length > 100"
+            ")",
+            timeout=15000
+        )
     except Exception:
-        pass  # No img elements yet — will still check CSS backgrounds
-    time.sleep(random.uniform(1, 2))
+        # Fallback: wait for any img element at minimum
+        try:
+            page.wait_for_selector('img', timeout=5000)
+        except Exception:
+            pass  # Truly nothing — will still check CSS backgrounds
+    time.sleep(1)
+
+    # Dismiss cookie consent banners and age-gate overlays before any interaction.
+    # These block pointer events — carousels can't be clicked and lazy images won't load.
+    _dismiss_overlays(page)
+    time.sleep(0.8)
 
     # Scroll to load lazy images. Guard against null document.body (can happen
     # when the page is a bot-wall that hasn't rendered yet).
@@ -766,7 +854,9 @@ def _scrape_current_page(page, page_label):
         pass
     time.sleep(1.5)
 
-    # Cycle carousels
+    # Cycle ALL carousels on the page (not just the first match).
+    # Uses a WeakSet so the same button element is never double-clicked even if
+    # it matches multiple selectors.
     print(f"[*] Cycling carousels on {page_label}...")
     page.evaluate("""
         () => {
@@ -775,18 +865,43 @@ def _scrape_current_page(page, page_label):
                 '.owl-next', '[data-slide="next"]', '.next-arrow', '.arrow-right',
                 '.slider-next', '.bx-next', '.flex-next', '.glide__arrow--right',
                 'button[aria-label="Next"]', 'button[aria-label="next"]',
-                '.splide__arrow--next', '.flickity-prev-next-button.next'
+                '.splide__arrow--next', '.flickity-prev-next-button.next',
+                '[data-direction="next"]', '[data-action="next"]',
+                '.carousel__arrow--next', '.hero-slider__btn--next',
+                '.js-next', '[class*="arrow-next"]', '[class*="next-btn"]',
             ];
+            const clicked = new WeakSet();
             for (const sel of nextSelectors) {
-                const btn = document.querySelector(sel);
-                if (btn) {
-                    for (let i = 0; i < 10; i++) { btn.click(); }
-                    break;
-                }
+                try {
+                    for (const btn of document.querySelectorAll(sel)) {
+                        // offsetParent null = hidden element, skip it
+                        if (!clicked.has(btn) && btn.offsetParent !== null) {
+                            for (let i = 0; i < 8; i++) btn.click();
+                            clicked.add(btn);
+                        }
+                    }
+                } catch (_) {}
             }
         }
     """)
     time.sleep(3)
+
+    # Second scroll pass — carousel cycling reveals new slides whose lazy images
+    # haven't loaded yet. Scroll the page again to trigger their load.
+    for i in range(2):
+        scroll_pct = (i + 1) * 50
+        try:
+            page.evaluate(
+                f"() => {{ if (document.body) window.scrollTo(0, document.body.scrollHeight * {scroll_pct / 100}); }}"
+            )
+        except Exception:
+            pass
+        time.sleep(0.8)
+    try:
+        page.evaluate("() => { if (document.body) window.scrollTo(0, 0); }")
+    except Exception:
+        pass
+    time.sleep(0.5)
 
     # Extract images
     print(f"[*] Extracting images from {page_label}...")
@@ -805,9 +920,23 @@ def _scrape_current_page(page, page_label):
                 const src = img.currentSrc || img.src
                     || img.getAttribute('data-src')
                     || img.getAttribute('data-lazy-src')
-                    || img.getAttribute('data-original') || '';
-                const srcset = img.getAttribute('srcset') || '';
-                const srcsetUrl = srcset ? srcset.split(',')[0].trim().split(' ')[0] : '';
+                    || img.getAttribute('data-original')
+                    || img.getAttribute('data-lazy')
+                    || img.getAttribute('data-image')
+                    || img.getAttribute('data-original-src')
+                    || '';
+                // Prefer the largest srcset URL (usually last entry with biggest w descriptor)
+                const srcsetRaw = img.getAttribute('srcset') || img.getAttribute('data-srcset') || '';
+                let srcsetUrl = '';
+                if (srcsetRaw) {
+                    const parts = srcsetRaw.split(',').map(s => {
+                        const p = s.trim().split(/\s+/);
+                        const w = p[1] && p[1].endsWith('w') ? parseInt(p[1]) : 0;
+                        return { url: p[0], w };
+                    }).filter(p => p.url);
+                    parts.sort((a, b) => b.w - a.w);
+                    srcsetUrl = (parts[0] && parts[0].url) || '';
+                }
                 const isVisible = cs.display !== 'none' && cs.visibility !== 'hidden'
                     && rect.width > 0 && rect.height > 0;
                 const inCarousel = !!(parentClasses + ' ' + (img.className || '')).match(
@@ -842,21 +971,42 @@ def _scrape_current_page(page, page_label):
                 'page': page_label,
             })
 
-    # Background images
+    # Background images — two sources:
+    # 1. Computed CSS background-image (current active backgrounds)
+    # 2. data-bg / data-background / data-background-image attributes (lazy-loaded,
+    #    not yet applied to CSS — still contain the real image URL)
     bg_images = page.evaluate("""
         () => {
             const bgImages = [];
+            const seen = new Set();
             document.querySelectorAll('*').forEach(el => {
+                // Source 1: computed CSS background-image
                 const style = window.getComputedStyle(el);
                 const bgImage = style.backgroundImage;
                 if (bgImage && bgImage !== 'none' && !bgImage.includes('gradient')) {
-                    const m = bgImage.match(/url\\(["']?([^"']*)["']?\\)/);
-                    if (m && m[1] && !m[1].startsWith('data:')) {
+                    const m = bgImage.match(/url\\(["']?([^"'\\)]+)["']?\\)/);
+                    if (m && m[1] && !m[1].startsWith('data:') && !seen.has(m[1])) {
+                        seen.add(m[1]);
                         const rect = el.getBoundingClientRect();
                         bgImages.push({
                             src: m[1], width: rect.width, height: rect.height,
                             visible: style.display !== 'none' && rect.width > 0 && rect.height > 0
                         });
+                    }
+                }
+                // Source 2: data-bg / data-background attributes (lazy-load pattern)
+                const dataAttrs = ['data-bg', 'data-background', 'data-background-image',
+                                   'data-lazy-background', 'data-lazy-bg'];
+                for (const attr of dataAttrs) {
+                    const val = el.getAttribute(attr);
+                    if (val && !val.startsWith('data:') && !seen.has(val)) {
+                        seen.add(val);
+                        const rect = el.getBoundingClientRect();
+                        bgImages.push({
+                            src: val, width: rect.width, height: rect.height,
+                            visible: rect.width > 0 && rect.height > 0
+                        });
+                        break;
                     }
                 }
             });
@@ -993,63 +1143,62 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             print("[*] STEP 1: Scraping homepage...")
             print("=" * 60)
 
-            # Two-phase navigation strategy:
+            # Navigation strategy:
             #
-            # Phase 1 — commit (fast): fires as soon as the first HTTP response byte
-            # arrives. Lets us check immediately whether the proxy returned real content
-            # or a tiny empty shell (e.g. stake.com returns 39 bytes → bail fast).
-            #
-            # Phase 2 — domcontentloaded (slower): only run if Phase 1 produced real
-            # content. Waits for HTML parsing to complete so JS-rendered images appear.
+            # Phase 1 — commit: fires on first HTTP byte, fast fail for empty shells
+            # Phase 2 — domcontentloaded: wait for HTML parse (handles Cloudflare
+            #   challenge redirects — don't bail early, let the redirect complete)
+            # Phase 3 — JS render wait: React/Vue/Next.js CSR apps render content
+            #   AFTER domcontentloaded, so we explicitly wait for real content to appear
+            commit_fired = False
             try:
                 page.goto(url, wait_until='commit', timeout=30000)
+                commit_fired = True
             except Exception as e:
                 print(f"    (connection timed out: {type(e).__name__})")
 
             # Immediate shell-size check right after first byte.
-            # If tiny (<= 200 bytes) the proxy returned nothing useful — no need to wait.
-            try:
-                immediate_len = page.evaluate("() => document.documentElement.outerHTML.length")
-                if immediate_len <= 200:
-                    print(f"[!] Empty shell received immediately (html_len={immediate_len}) — proxy blocked by site")
-                    results['blocked'] = True
-                    browser.close()
-                    return results
-            except Exception:
-                pass
-
-            # Phase 2: wait for DOM to finish parsing (JS-rendered content needs this)
-            dom_loaded = False
-            try:
-                page.wait_for_load_state('domcontentloaded', timeout=25000)
-                dom_loaded = True
-            except Exception:
-                # domcontentloaded timed out — check if there's ANY content yet.
-                # If there isn't (proxy returned nothing useful), exit immediately
-                # rather than waiting another 8s for networkidle.
+            # If tiny (<= 200 bytes) the proxy returned nothing useful — bail fast.
+            if commit_fired:
                 try:
-                    interim_imgs = page.evaluate("() => document.querySelectorAll('img').length")
-                    interim_text = page.evaluate(
-                        "() => (document.body && document.body.innerText || '').trim().length"
-                    )
-                    if interim_imgs == 0 and interim_text < 100:
-                        print(f"    (domcontentloaded timed out with no content — bailing early)")
+                    immediate_len = page.evaluate("() => document.documentElement.outerHTML.length")
+                    if immediate_len <= 200:
+                        print(f"[!] Empty shell (html_len={immediate_len}) — proxy blocked by site")
                         results['blocked'] = True
                         browser.close()
                         return results
                 except Exception:
                     pass
-                print(f"    (domcontentloaded timed out, but content exists — continuing)")
 
-            # Give JS-heavy pages a short grace window to settle (skip if we already
-            # know domcontentloaded timed out and we still decided to continue)
-            if dom_loaded:
-                try:
-                    page.wait_for_load_state('networkidle', timeout=8000)
-                except Exception:
-                    pass  # Fine — casino SPAs rarely reach networkidle
+            # Phase 2: wait for domcontentloaded.
+            # Do NOT bail early on timeout — Cloudflare challenge pages redirect mid-flight
+            # and can push the real domcontentloaded event past the timeout window.
+            try:
+                page.wait_for_load_state('domcontentloaded', timeout=30000)
+            except Exception:
+                print(f"    (domcontentloaded timed out — may be Cloudflare challenge, continuing)")
 
-            # Debug: log what page actually loaded (helps diagnose bot-wall pages)
+            # Short networkidle grace (casino SPAs rarely reach full idle)
+            try:
+                page.wait_for_load_state('networkidle', timeout=8000)
+            except Exception:
+                pass
+
+            # Phase 3: for React/Vue/Next.js CSR apps, content renders after
+            # domcontentloaded. Extended to 20s because proxy adds latency to
+            # every JS bundle / API request the app makes during render.
+            try:
+                page.wait_for_function(
+                    "() => document.body && ("
+                    "  document.querySelectorAll('img[src]:not([src=\"\"])').length > 0 ||"
+                    "  document.body.innerText.trim().length > 100"
+                    ")",
+                    timeout=20000
+                )
+            except Exception:
+                pass  # Not a CSR app, or truly nothing loaded
+
+            # Debug: log what page actually loaded
             try:
                 loaded_url = page.url
                 loaded_title = page.title()
@@ -1058,25 +1207,22 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             except Exception:
                 loaded_url = ''
 
-            # Bail out if navigation never completed (DNS fail, network error, etc.)
-            # 'about:blank' means the proxy couldn't connect to the target at all.
+            # Bail out if navigation never completed at all
             if not loaded_url or loaded_url in ('about:blank', '') or loaded_url.startswith('chrome-error://'):
                 print("[-] Navigation failed — proxy could not reach the target site")
                 browser.close()
                 return results
 
-            # Detect empty/useless page responses before spending 30+ seconds scraping.
-            # Covers two failure modes:
-            #   a) Proxy returned a bare HTML shell (html_len < 1000, e.g. stake.com = 39-881 chars)
-            #   b) JS ran but produced nothing: no title + no images + no visible text
-            # Both indicate the proxy could not load the real site content.
+            # Detect empty/useless page after all waiting:
+            #   a) Bare HTML shell (html_len < 1000) — proxy returned nothing real
+            #   b) JS ran but produced nothing (no title + no images + no text)
             try:
-                html_len  = page.evaluate("() => document.documentElement.outerHTML.length")
-                img_count = page.evaluate("() => document.querySelectorAll('img').length")
+                html_len      = page.evaluate("() => document.documentElement.outerHTML.length")
+                img_count     = page.evaluate("() => document.querySelectorAll('img[src]:not([src=\"\"])').length")
                 body_text_len = page.evaluate(
                     "() => (document.body && document.body.innerText || '').trim().length"
                 )
-                print(f"[*] html_len={html_len}  imgs={img_count}  text_len={body_text_len}")
+                print(f"[*] html_len={html_len}  real_imgs={img_count}  text_len={body_text_len}")
 
                 empty_shell = html_len < 1000
                 no_content  = (not loaded_title.strip()) and img_count == 0 and body_text_len < 100
@@ -1147,7 +1293,7 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             return results
 
 
-def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_proxy=True):
+def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_proxy=True, skip_proxy=False):
     """
     Full site scrape with automatic proxy fallback.
 
@@ -1162,10 +1308,17 @@ def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_prox
         location: Geo location code
         proxy: Optional proxy dict
         use_env_proxy: Load proxy from .env if True (default)
+        skip_proxy: If True, only use direct connection — never use proxy
 
     Returns:
         dict with keys 'homepage' and 'promotions', each a list of banner dicts
     """
+
+    if skip_proxy:
+        print("=" * 60)
+        print("[*] STRATEGY: Direct connection only (no proxy)...")
+        print("=" * 60)
+        return _scrape_with_connection(url, headless, location, proxy=None, use_env_proxy=False)
 
     # STEP 1: Try direct connection (no proxy)
     print("=" * 60)

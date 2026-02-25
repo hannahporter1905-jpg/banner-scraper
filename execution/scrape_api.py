@@ -24,27 +24,34 @@ def main():
                         choices=['true', 'false'], help='Run in headless mode')
     parser.add_argument('--json', action='store_true',
                         help='Output results as JSON')
+    parser.add_argument('--no-proxy', action='store_true',
+                        help='Skip proxy entirely — scrape with direct connection only')
 
     args = parser.parse_args()
 
     url = args.url
     location_id = args.location
     headless = args.headless == 'true'
+    skip_proxy = args.no_proxy
 
     # Map location ID to country code
     location_map = {
         1: 'US', 2: 'UK', 3: 'CA', 4: 'AU', 5: 'DE',
         6: 'FR', 7: 'JP', 8: 'BR', 9: 'IN', 10: 'SG'
     }
-    location = location_map[location_id]
+    location = location_map.get(location_id, 'US')
 
-    print(f"[*] Starting banner scrape for: {url}")
-    print(f"[*] Location: {location} ({location_id}) | Headless: {headless}")
+    if skip_proxy:
+        print(f"[*] Starting banner scrape for: {url}")
+        print(f"[*] Mode: No Proxy / Direct connection | Headless: {headless}")
+    else:
+        print(f"[*] Starting banner scrape for: {url}")
+        print(f"[*] Location: {location} ({location_id}) | Headless: {headless}")
     print("=" * 60)
 
     try:
         # Run the scraper
-        results = scrape_site_full(url, headless=headless, location=location)
+        results = scrape_site_full(url, headless=headless, location=location, skip_proxy=skip_proxy)
 
         # Convert results to JSON-serializable format
         output = {
