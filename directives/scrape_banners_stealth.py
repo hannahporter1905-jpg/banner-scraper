@@ -91,15 +91,19 @@ def get_proxy_from_env(country='US'):
     port = os.getenv('PROXY_PORT')
     user = os.getenv('PROXY_USER', '')
     password = os.getenv('PROXY_PASS', '')
-    scheme = os.getenv('PROXY_SCHEME', 'http')
 
     if not host or not port:
         return None
 
-    # Oxylabs Web Unblocker: country is targeted via x-oxylabs-geo-location header,
-    # NOT via username suffix. Plain username required or proxy returns 401.
+    # Always use http:// for the Playwright proxy server URL.
+    # Oxylabs Web Unblocker is an HTTP CONNECT tunnel proxy — Chrome sends CONNECT
+    # requests to it and the actual HTTPS happens inside the tunnel.
+    # Using https:// here would tell Chromium to SSL-handshake with the proxy
+    # server itself first, which works on Windows but fails on Linux/Cloud Run
+    # due to how Chromium's bundled NSS validates the proxy cert.
+    # PROXY_SCHEME in .env is only used for the manual curl test, not here.
     return {
-        'server': f'{scheme}://{host}:{port}',
+        'server': f'http://{host}:{port}',
         'username': user,
         'password': password,
         'country': country,
