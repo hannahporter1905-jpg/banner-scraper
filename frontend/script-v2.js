@@ -114,10 +114,32 @@ async function startScraping() {
 function pollSession() {
     if (!currentSessionId) return;
 
-    // Poll every 2 seconds
+    const POLL_INTERVAL_MS = 2000;
+    const MAX_POLL_MINUTES = 3;
+    const MAX_POLLS = (MAX_POLL_MINUTES * 60 * 1000) / POLL_INTERVAL_MS; // 90 polls = 3 min
+    let pollCount = 0;
+    const pollStart = Date.now();
+
+    // Poll every 2 seconds, give up after 3 minutes
     pollInterval = setInterval(async () => {
+        pollCount++;
+
+        // Railguard: stop polling if the backend never responds with completion
+        if (pollCount > MAX_POLLS) {
+            clearInterval(pollInterval);
+            showError(`Scraping timed out after ${MAX_POLL_MINUTES} minutes with no response. The site may be unreachable, heavily bot-protected, or the proxy location may be blocked. Try a different location or check the site manually.`);
+            resetButton();
+            return;
+        }
+
+        // Show elapsed time so the user knows it's still running
+        const elapsed = Math.floor((Date.now() - pollStart) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        statusText.textContent = `Scraping... ${mins > 0 ? mins + 'm ' : ''}${secs}s`;
+
         try {
-            console.log(`Polling session: ${currentSessionId}`);
+            console.log(`Polling session: ${currentSessionId} (poll ${pollCount}/${MAX_POLLS})`);
             const response = await fetch(`${API_URL}/scrape/${currentSessionId}`);
             console.log('Response status:', response.status, response.ok);
 
@@ -150,7 +172,7 @@ function pollSession() {
             showError('Polling failed: ' + error.message);
             resetButton();
         }
-    }, 2000);
+    }, POLL_INTERVAL_MS);
 }
 
 function updateProgressLog(progressItems) {

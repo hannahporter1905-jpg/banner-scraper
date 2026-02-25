@@ -91,6 +91,19 @@ app.post('/api/scrape', async (req, res) => {
     cwd: path.join(__dirname, '..')
   });
 
+  // Railguard: kill the Python process after 5 minutes and surface a clear error.
+  // Without this, a hanging scrape keeps the session in 'running' forever.
+  const PROCESS_TIMEOUT_MS = 5 * 60 * 1000;
+  const processKillTimer = setTimeout(() => {
+    console.warn(`[${sessionId}] Timeout — killing Python process after 5 min`);
+    pythonProcess.kill('SIGTERM');
+    if (session.status === 'running') {
+      session.status = 'error';
+      session.error = 'Scraping timed out after 5 minutes. The site may be slow, heavily protected, or unreachable via the selected proxy location.';
+      session.progress.push({ timestamp: new Date(), message: '[!] Scraping timed out after 5 minutes' });
+    }
+  }, PROCESS_TIMEOUT_MS);
+
   let outputBuffer = '';
   let errorBuffer = '';
 
@@ -116,6 +129,7 @@ app.post('/api/scrape', async (req, res) => {
   });
 
   pythonProcess.on('close', (code) => {
+    clearTimeout(processKillTimer);
     console.log(`[${sessionId}] Process closed with code ${code}`);
 
     if (code === 0) {
@@ -195,6 +209,14 @@ app.get('/api/scrape/:sessionId', (req, res) => {
       ? new Date() - session.startTime
       : null
   });
+});
+
+/**
+ * GET /api/version
+ * Returns the deployed version string — use this to confirm a deployment went live.
+ */
+app.get('/api/version', (req, res) => {
+  res.json({ version: VERSION });
 });
 
 /**
@@ -338,7 +360,7 @@ app.get('/api/download', async (req, res) => {
 });
 
 // Health check — update VERSION string on every deploy to confirm latest code is live
-const VERSION = '2026-02-25-v14-fix-accept-header';
+const VERSION = '2026-02-25-v15-railguard';
 
 app.get('/api/health', (req, res) => {
   res.json({
