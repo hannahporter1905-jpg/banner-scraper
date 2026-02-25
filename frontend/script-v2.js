@@ -137,12 +137,12 @@ function pollSession() {
             return;
         }
 
-        // Show elapsed time so the user knows it's still running (not frozen)
+        // Show elapsed time in the status badge so user knows it's alive (not frozen)
         const elapsed = Math.floor((Date.now() - pollStart) / 1000);
         const mins = Math.floor(elapsed / 60);
         const secs = elapsed % 60;
-        const hint = elapsed > 90 ? ' — slow site, still working...' : '';
-        statusText.textContent = `Scraping... ${mins > 0 ? mins + 'm ' : ''}${secs}s${hint}`;
+        const timeStr = (mins > 0 ? mins + 'm ' : '') + secs + 's';
+        statusBadge.textContent = elapsed > 90 ? `Running... ${timeStr} (slow site)` : `Running... ${timeStr}`;
 
         try {
             console.log(`Polling session: ${currentSessionId} (poll ${pollCount}/${MAX_POLLS})`);
