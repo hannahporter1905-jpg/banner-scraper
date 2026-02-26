@@ -9,6 +9,10 @@ import json
 import argparse
 from pathlib import Path
 
+# Flush stdout after every print so Node.js sees progress lines in real-time
+# (Python uses block-buffering when stdout is a pipe, not a TTY)
+sys.stdout.reconfigure(line_buffering=True)
+
 # Add directives to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

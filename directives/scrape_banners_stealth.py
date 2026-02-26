@@ -1274,7 +1274,11 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
                 print(f"[*] html_len={html_len}  real_imgs={img_count}  text_len={body_text_len}  links={link_count}")
 
                 empty_shell = html_len < 1000
-                no_content  = (not loaded_title.strip()) and img_count == 0 and body_text_len < 100
+                # no_content: only bail if NOTHING rendered — no title, no images, no text,
+                # AND no nav links (link_count <= 3).  React SPAs mount nav links first
+                # (Phase 3 waits for links > 5) so a page with links is a live SPA worth
+                # scraping further — not a proxy error page.
+                no_content  = (not loaded_title.strip()) and img_count == 0 and body_text_len < 100 and link_count <= 3
 
                 if empty_shell or no_content:
                     print(f"[!] Page has no usable content — proxy blocked or site unreachable")

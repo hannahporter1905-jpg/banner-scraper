@@ -88,7 +88,8 @@ app.post('/api/scrape', async (req, res) => {
   console.log(`[${sessionId}] Starting scrape: ${url} (${noProxy ? 'No Proxy' : LOCATIONS[location]})`);
 
   const pythonProcess = spawn('python', args, {
-    cwd: path.join(__dirname, '..')
+    cwd: path.join(__dirname, '..'),
+    env: { ...process.env, PYTHONUNBUFFERED: '1' }
   });
 
   // Railguard: kill the Python process after 5 minutes and surface a clear error.
@@ -360,7 +361,7 @@ app.get('/api/download', async (req, res) => {
 });
 
 // Health check — update VERSION string on every deploy to confirm latest code is live
-const VERSION = '2026-02-25-v15-railguard';
+const VERSION = '2026-02-26-v16-react-fix';
 
 app.get('/api/health', (req, res) => {
   res.json({
