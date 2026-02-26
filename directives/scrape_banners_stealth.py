@@ -833,24 +833,13 @@ def _scrape_current_page(page, page_label):
     except Exception:
         pass
 
-    # Step 2: Wait for hero/banner-sized images to finish downloading.
-    # Threshold is 600px wide — game thumbnails are typically 300-400px, hero
-    # sliders and promotional banners are 800px+ wide. This prevents scrolling
-    # before the above-fold banner content has actually loaded.
-    # 15s timeout covers slow proxy connections (each JS bundle + API call
-    # goes through the proxy, adding several seconds of latency).
+    # Step 2: Give the React app time to finish fetching promo data and images.
+    # Previously used wait_for_function(naturalWidth > 600) here, but that call
+    # hangs indefinitely when the page does an internal navigation/redirect after
+    # mounting its nav — Playwright's timeout doesn't fire in that state.
+    # A plain sleep is simpler and avoids the hang entirely.
     print(f"[*] Waiting for banner images on {page_label}...")
-    try:
-        page.wait_for_function(
-            "() => Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
-            "  img => img.naturalWidth > 600"
-            ")",
-            timeout=15000
-        )
-    except Exception:
-        # No banner-sized img tags found — either a CSS-background-only site, or
-        # React hasn't finished its API fetches yet. Sleep to let the app settle.
-        time.sleep(5)
+    time.sleep(8)
 
     # Dismiss cookie consent banners and age-gate overlays before any interaction.
     # These block pointer events — carousels can't be clicked and lazy images won't load.
