@@ -1213,27 +1213,13 @@ def _scrape_with_connection(url, headless, location, proxy, use_env_proxy):
             except Exception:
                 pass
 
-            # Phase 3: for React/Vue/Next.js CSR apps, content renders after
-            # domcontentloaded. Extended to 20s because proxy adds latency to
-            # every JS bundle / API request the app makes during render.
-            # Three early-exit signals (fastest to slowest):
-            #   1. links > 5   — nav bar mounts (React hydration complete)
-            #   2. naturalWidth > 600 — a hero/banner image downloaded
-            #      (600px threshold skips small thumbnails/icons that load first)
-            #   3. text > 200  — substantial text rendered (server-rendered pages)
-            try:
-                page.wait_for_function(
-                    "() => document.body && ("
-                    "  document.querySelectorAll('a[href]:not([href=\"\"])').length > 5 ||"
-                    "  Array.from(document.querySelectorAll('img[src]:not([src=\"\"])')).some("
-                    "    img => img.naturalWidth > 600"
-                    "  ) ||"
-                    "  document.body.innerText.trim().length > 200"
-                    ")",
-                    timeout=20000
-                )
-            except Exception:
-                pass  # Not a CSR app, or truly nothing loaded
+            # Phase 3: give React/Vue/Next.js CSR apps time to hydrate and render.
+            # Previously used wait_for_function here, but it hangs indefinitely
+            # when the SPA does an internal navigation/redirect during load —
+            # Playwright's timeout does not fire in that state (same bug as in
+            # _scrape_current_page). Plain sleep is simpler and avoids the hang.
+            print("[*] Waiting for page to render...")
+            time.sleep(12)
 
             # Debug: log what page actually loaded
             try:
@@ -1362,46 +1348,25 @@ def scrape_site_full(url, headless=True, location='US', proxy=None, use_env_prox
         print("=" * 60)
         return _scrape_with_connection(url, headless, location, proxy=None, use_env_proxy=False)
 
-    # STEP 1: Try direct connection (no proxy)
+    # Go straight to proxy — skip the direct-first attempt.
+    # The direct attempt was taking 1-2 minutes on geo-blocked sites before
+    # falling back to proxy anyway, leaving < 3 min of the 5-min railguard
+    # for the actual proxy scrape, which then timed out.
     print("=" * 60)
-    print("[*] STRATEGY: Try direct connection first...")
-    print("=" * 60)
-
-    results = _scrape_with_connection(url, headless, location, proxy=None, use_env_proxy=False)
-
-    # Check if direct connection worked
-    # Blocked = geo-restriction page detected (don't trust any banners found on it)
-    # Zero = page loaded but no banners matched (also retry with proxy)
-    total_found = len(results.get('homepage', [])) + len(results.get('promotions', []))
-    is_blocked = results.get('blocked', False)
-
-    if total_found > 0 and not is_blocked:
-        print("\n" + "=" * 60)
-        print(f"[+] SUCCESS: Direct connection worked! Found {total_found} banner(s)")
-        print("[*] No proxy needed - saved proxy bandwidth!")
-        print("=" * 60 + "\n")
-        return results
-
-    # STEP 2: Direct connection geo-blocked or returned nothing → retry with proxy
-    print("\n" + "=" * 60)
-    if is_blocked:
-        print("[!] Direct connection: geo-restricted. Retrying with proxy...")
-    else:
-        print("[!] Direct connection: 0 banners found. Retrying with proxy...")
+    print("[*] STRATEGY: Proxy (Oxylabs Web Unblocker)...")
     print("=" * 60 + "\n")
 
     if not use_env_proxy and not proxy:
-        print("[-] No proxy available. Returning empty results.")
-        return results
+        print("[-] No proxy configured — falling back to direct connection.")
+        return _scrape_with_connection(url, headless, location, proxy=None, use_env_proxy=False)
 
-    # Retry with proxy
     results = _scrape_with_connection(url, headless, location, proxy, use_env_proxy=True)
 
     total_found = len(results.get('homepage', [])) + len(results.get('promotions', []))
 
     if total_found > 0:
         print("\n" + "=" * 60)
-        print(f"[+] SUCCESS: Proxy connection worked! Found {total_found} banner(s)")
+        print(f"[+] SUCCESS: Found {total_found} banner(s)")
         print("=" * 60 + "\n")
     else:
         print("\n" + "=" * 60)
