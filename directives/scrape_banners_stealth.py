@@ -81,29 +81,18 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 
 def get_proxy_from_env(country='US'):
-    """Build proxy config from .env variables. Supports country override.
+    """Build proxy config from .env / env vars. Falls back to hardcoded defaults.
 
-    Oxylabs Web Unblocker geo-targeting requires the country to be encoded
-    in the username: e.g. myuser-country-CA. The x-oxylabs-geo-location header
-    is kept as a secondary signal.
+    Credentials are hardcoded as fallbacks so the scraper works on Cloud Run
+    even when env vars are not configured. Env vars take priority when set.
     """
-    host = os.getenv('PROXY_HOST')
-    port = os.getenv('PROXY_PORT')
-    user = os.getenv('PROXY_USER', '')
-    password = os.getenv('PROXY_PASS', '')
+    host     = os.getenv('PROXY_HOST',   'unblock.oxylabs.io')
+    port     = os.getenv('PROXY_PORT',   '60000')
+    user     = os.getenv('PROXY_USER',   'abudabi_lEhmQ')
+    password = os.getenv('PROXY_PASS',   'Kels_1234567')
 
-    if not host or not port:
-        return None
-
-    # Always use http:// for the Playwright proxy server URL.
-    # Oxylabs Web Unblocker is an HTTP CONNECT tunnel proxy — Chrome sends CONNECT
-    # requests to it and the actual HTTPS happens inside the tunnel.
-    # Using https:// here would tell Chromium to SSL-handshake with the proxy
-    # server itself first, which works on Windows but fails on Linux/Cloud Run
-    # due to how Chromium's bundled NSS validates the proxy cert.
-    # PROXY_SCHEME in .env is only used for the manual curl test, not here.
     return {
-        'server': f'http://{host}:{port}',
+        'server': f'https://{host}:{port}',
         'username': user,
         'password': password,
         'country': country,
