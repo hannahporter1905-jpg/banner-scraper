@@ -7,7 +7,22 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "Bash(gcloud auth list:*)"
+      "Bash(gcloud auth list:*)",
+      "Bash(gcloud version:*)",
+      "Bash(\"C:/Users/User/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/gcloud\" auth list)",
+      "Bash(cmd /c:*)",
+      "Bash(powershell -Command:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud auth list\":*)",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud config get-value project\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source ''C:\\\\Users\\\\User\\\\Desktop\\\\banner-scraper'' --region asia-southeast1 --allow-unauthenticated --set-env-vars ''PROXY_HOST=unblock.oxylabs.io,PROXY_PORT=60000,PROXY_USER=abudabi_lEhmQ,PROXY_PASS=Kels_1234567,PORT=8080'' --project banner-scraper-api 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source ''C:\\\\Users\\\\User\\\\Desktop\\\\banner-scraper'' --region asia-southeast1 --allow-unauthenticated --set-env-vars ''PROXY_HOST=unblock.oxylabs.io,PROXY_PORT=60000,PROXY_USER=abudabi_lEhmQ,PROXY_PASS=Kels_1234567'' --project banner-scraper-api 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source ''C:\\\\Users\\\\User\\\\Desktop\\\\banner-scraper'' --region asia-southeast1 --allow-unauthenticated --project banner-scraper-api 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source ''C:\\\\Users\\\\User\\\\Desktop\\\\banner-scraper'' --region europe-west1 --allow-unauthenticated --project banner-scraper-api 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source . --region asia-southeast1 --project banner-scraper-451813 --quiet 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud auth list 2>&1\")",
+        "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud projects list 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source . --region europe-west1 --project banner-scraper-api --quiet 2>&1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"gcloud run deploy banner-scraper --source . --region asia-southeast1 --project banner-scraper-api --quiet 2>&1\")"
     ]
   }
 }
